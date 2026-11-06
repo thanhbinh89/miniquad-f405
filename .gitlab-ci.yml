@@ -1,0 +1,93 @@
+# MiniQuad-F405 CI
+#
+#   build : firmware (arm-none-eabi-gcc), WebAssembly emulator (clang + wasi-libc)
+#   test  : host unit tests + flight simulation + emulator, web configurator tests
+#   deploy: GitLab Pages = web configurator + the firmware just built
+#           (the "Firmware" page offers it as "Bản build mới nhất")
+
+stages: [build, test, deploy]
+
+default:
+  image: ubuntu:24.04
+  interruptible: true
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  GIT_DEPTH: 0                  # full history: git hash + commit time in fw_version.h
+
+.apt:
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends cmake make python3 git ca-certificates $APT_PACKAGES > /dev/null
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+
+firmware:
+  stage: build
+  extends: .apt
+  variables:
+    APT_PACKAGES: gcc-arm-none-eabi libnewlib-arm-none-eabi
+  script:
+    - cmake --preset release
+    - cmake --build --preset release -j"$(nproc)"
+    - cmake --preset debug
+    - cmake --build --preset debug -j"$(nproc)"
+  artifacts:
+    name: "miniquad-f405-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - build/release/out/
+    expire_in: 90 days
+
+wasm-emulator:
+  stage: build
+  extends: .apt
+  variables:
+    APT_PACKAGES: clang lld wasi-libc libclang-rt-18-dev-wasm32
+  script:
+    - cmake --preset wasm-emu
+    - cmake --build --preset wasm-emu -j"$(nproc)"
+  artifacts:
+    paths:
+      - web/demo/miniquad-emu.wasm
+    expire_in: 30 days
+
+host-tests:
+  stage: test
+  extends: .apt
+  needs: []
+  variables:
+    APT_PACKAGES: gcc libc6-dev
+  script:
+    - cmake --preset host-tests
+    - cmake --build --preset host-tests -j"$(nproc)"
+    - ctest --preset host-tests
+
+web-tests:
+  stage: test
+  image: node:22-bookworm
+  needs: [firmware, wasm-emulator]
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends cmake make gcc libc6-dev > /dev/null
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+  script:
+    # the native emulator lets the tests drive the real C protocol code;
+    # the release build is used for the firmware update test
+    - cmake --preset host-tests
+    - cmake --build --preset host-tests -j"$(nproc)" --target miniquad-emu
+    - cd web && npm test
+
+pages:
+  stage: deploy
+  image: alpine:3.20
+  needs: [firmware, wasm-emulator, host-tests, web-tests]
+  script:
+    - mkdir -p public/firmware
+    - cp -r web/index.html web/css web/js web/fonts web/img web/demo public/
+    - cp THIRD_PARTY.md public/
+    - cd build/release/out
+    - cp manifest.json miniquad-app.bin miniquad-app.hex miniquad-bootloader.bin miniquad-bootloader.hex miniquad-full.hex ../../../public/firmware/
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

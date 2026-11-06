@@ -1,0 +1,73 @@
+/*
+ * Bootloader linker script. Preprocessed with the C preprocessor
+ * (gcc -E -P -x c) so that addresses come from common/memory_map.h.
+ */
+#include "memory_map.h"
+
+ENTRY(Reset_Handler)
+
+MEMORY
+{
+    FLASH (rx)  : ORIGIN = MM_BL_BASE,   LENGTH = MM_BL_SIZE
+    RAM   (rwx) : ORIGIN = MM_SRAM_BASE, LENGTH = MM_SRAM_SIZE - MM_SHARED_SIZE
+}
+
+/* Stack grows down from the top of RAM, just below the shared mailbox. */
+_estack     = ORIGIN(RAM) + LENGTH(RAM);
+_stack_size = 0x2000;
+
+SECTIONS
+{
+    .isr_vector :
+    {
+        . = ALIGN(4);
+        KEEP(*(.isr_vector))
+        . = ALIGN(4);
+    } > FLASH
+
+    .text :
+    {
+        *(.text*)
+        *(.rodata*)
+        KEEP(*(.init))
+        KEEP(*(.fini))
+        . = ALIGN(4);
+        _etext = .;
+    } > FLASH
+
+    .ARM.exidx :
+    {
+        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+    } > FLASH
+
+    .data :
+    {
+        . = ALIGN(4);
+        _sdata = .;
+        *(.data*)
+        . = ALIGN(4);
+        _edata = .;
+    } > RAM AT > FLASH
+    _sidata = LOADADDR(.data);
+
+    .bss (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sbss = .;
+        *(.bss*)
+        *(COMMON)
+        . = ALIGN(4);
+        _ebss = .;
+    } > RAM
+
+    /* no CCM data in the bootloader: empty range */
+    _sccm_bss = _ebss;
+    _eccm_bss = _ebss;
+
+    /* make sure the stack still fits */
+    .stack_reserve (NOLOAD) :
+    {
+        . = ALIGN(8);
+        . = . + _stack_size;
+    } > RAM
+}

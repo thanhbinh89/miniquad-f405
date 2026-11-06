@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "arm-base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi.cmake"
+    },
+    {
+      "name": "release",
+      "displayName": "Firmware (Release, -O2)",
+      "inherits": "arm-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "displayName": "Firmware (Debug, -Og)",
+      "inherits": "arm-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "host-tests",
+      "displayName": "Host unit tests + simulation + emulator",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/host-tests",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "wasm-emu",
+      "displayName": "Emulator for the web demo (clang + wasi-libc)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/wasm-emu",
+      "toolchainFile": "${sourceDir}/cmake/wasm32-wasi.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release",    "configurePreset": "release" },
+    { "name": "debug",      "configurePreset": "debug" },
+    { "name": "host-tests", "configurePreset": "host-tests" },
+    { "name": "wasm-emu",   "configurePreset": "wasm-emu" }
+  ],
+  "testPresets": [
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

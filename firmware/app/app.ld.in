@@ -1,0 +1,99 @@
+/*
+ * Application linker script. Preprocessed with the C preprocessor
+ * (gcc -E -P -x c) so that addresses come from common/memory_map.h.
+ *
+ *   APPHDR  512 B header (filled by tools/fwpack.py)
+ *   FLASH   vector table (512 B aligned) + code + rodata + .data image
+ *   RAM     .data, .bss, .noinit  (DMA capable SRAM1/SRAM2)
+ *   CCM     stack + .ccm_bss      (CPU only - never used for DMA buffers)
+ */
+#include "memory_map.h"
+
+ENTRY(Reset_Handler)
+
+MEMORY
+{
+    APPHDR (rx)  : ORIGIN = MM_APP_BASE,    LENGTH = MM_APP_HEADER_SIZE
+    FLASH  (rx)  : ORIGIN = MM_APP_VECTORS, LENGTH = MM_APP_MAX_SIZE - MM_APP_HEADER_SIZE
+    RAM    (rwx) : ORIGIN = MM_SRAM_BASE,   LENGTH = MM_SRAM_SIZE - MM_SHARED_SIZE
+    CCM    (rw)  : ORIGIN = MM_CCM_BASE,    LENGTH = MM_CCM_SIZE
+}
+
+_stack_size = 0x4000;
+
+SECTIONS
+{
+    .app_header :
+    {
+        KEEP(*(.app_header))
+    } > APPHDR
+
+    .isr_vector :
+    {
+        . = ALIGN(4);
+        KEEP(*(.isr_vector))
+        . = ALIGN(4);
+    } > FLASH
+
+    .text :
+    {
+        *(.text*)
+        *(.rodata*)
+        KEEP(*(.init))
+        KEEP(*(.fini))
+        . = ALIGN(4);
+        _etext = .;
+    } > FLASH
+
+    .ARM.exidx :
+    {
+        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+    } > FLASH
+
+    .data :
+    {
+        . = ALIGN(4);
+        _sdata = .;
+        *(.data*)
+        *(.ramfunc*)
+        . = ALIGN(4);
+        _edata = .;
+    } > RAM AT > FLASH
+    _sidata = LOADADDR(.data);
+
+    .bss (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sbss = .;
+        *(.bss*)
+        *(COMMON)
+        . = ALIGN(4);
+        _ebss = .;
+    } > RAM
+
+    /* survives a reset: fault record */
+    .noinit (NOLOAD) :
+    {
+        . = ALIGN(4);
+        *(.noinit*)
+        . = ALIGN(4);
+    } > RAM
+
+    .ccm_bss (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sccm_bss = .;
+        *(.ccm_bss*)
+        . = ALIGN(4);
+        _eccm_bss = .;
+    } > CCM
+
+    .stack (NOLOAD) :
+    {
+        . = ALIGN(32);          /* MPU stack guard region alignment */
+        _sstack = .;
+        . = . + _stack_size;
+        . = ALIGN(8);
+        _estack = .;
+    } > CCM
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniQuad-F405 Configurator</title>
+  <meta name="description" content="Cấu hình, tinh chỉnh PID, xem telemetry và nạp firmware cho MiniQuad-F405 qua cổng serial (Web Serial).">
+  <link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/be-vietnam-pro-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/be-vietnam-pro-vietnamese-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-name">MiniQuad-F405</span>
+        <span class="brand-sub">Configurator</span>
+      </div>
+      <div class="device-line" id="device-line" aria-live="polite"></div>
+      <div class="conn" id="conn"></div>
+    </header>
+
+    <nav class="rail" id="rail" aria-label="Các trang">
+      <button data-view="dashboard"><span class="pad"></span>Tổng quan</button>
+      <button data-view="tuning"><span class="pad"></span>Tinh chỉnh PID</button>
+      <button data-view="config"><span class="pad"></span>Tham số</button>
+      <button data-view="setup"><span class="pad"></span>Hiệu chuẩn &amp; test</button>
+      <button data-view="firmware"><span class="pad"></span>Firmware</button>
+      <button data-view="console"><span class="pad"></span>Nhật ký</button>
+      <div class="rail-foot" id="rail-foot"></div>
+    </nav>
+
+    <main id="main"></main>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <dialog id="dialog"></dialog>
+  <noscript>Trang này cần JavaScript.</noscript>
+</body>
+</html>

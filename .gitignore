@@ -1,0 +1,23 @@
+# build output
+/build/
+/out/
+*.o
+*.d
+*.elf
+*.map
+*.bin
+*.hex
+!web/firmware/.gitkeep
+# editors / tools
+.vscode/
+.idea/
+*.swp
+compile_commands.json
+__pycache__/
+node_modules/
+sim_*.csv
+
+# web build products
+/web/test/e2e/out/
+/web/firmware/*
+!/web/firmware/.gitkeep
