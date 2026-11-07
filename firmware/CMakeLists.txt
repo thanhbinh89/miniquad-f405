@@ -29,12 +29,13 @@ add_custom_target(fw_version
 # Options shared by every firmware target
 # ---------------------------------------------------------------------------
 add_library(fw_options INTERFACE)
-target_compile_definitions(fw_options INTERFACE STM32F405xx)
+target_compile_definitions(fw_options INTERFACE STM32F405xx MQ_BOARD_REV=${MQ_BOARD_REV})
 target_include_directories(fw_options INTERFACE
   "${FW_DIR}/lib/cmsis/core"
   "${FW_DIR}/lib/cmsis/device"
   "${FW_COMMON_DIR}"
   "${FW_COMMON_DIR}/hal"
+  "${FW_COMMON_DIR}/usb"
   "${FW_COMMON_DIR}/util"
   "${FW_GEN_DIR}")
 target_compile_options(fw_options INTERFACE
@@ -48,11 +49,18 @@ target_link_libraries(fw_options INTERFACE m)
 set(FW_COMMON_SOURCES
   "${FW_COMMON_DIR}/hal/startup_stm32f405.c"
   "${FW_COMMON_DIR}/hal/clock.c"
-  "${FW_COMMON_DIR}/hal/uart_link.c"
+  "${FW_COMMON_DIR}/hal/link_port.c"
   "${FW_COMMON_DIR}/hal/flash_if.c"
   "${FW_COMMON_DIR}/util/crc.c"
   "${FW_COMMON_DIR}/util/cobs.c"
   "${FW_COMMON_DIR}/util/link.c")
+if(MQ_BOARD_REV EQUAL 1)
+  list(APPEND FW_COMMON_SOURCES "${FW_COMMON_DIR}/hal/uart_link.c")
+else()
+  list(APPEND FW_COMMON_SOURCES
+    "${FW_COMMON_DIR}/usb/usb_dwc2.c"
+    "${FW_COMMON_DIR}/usb/usb_cdc.c")
+endif()
 
 # Preprocess <in>.ld.in with the C preprocessor and link <target> with it.
 function(fw_use_linker_script target in)
@@ -96,6 +104,7 @@ add_custom_target(firmware_package ALL
           --bl-elf  "$<TARGET_FILE:bootloader>"
           --objcopy "${CMAKE_OBJCOPY}"
           --version "${PROJECT_VERSION}"
+          --board-rev "${MQ_BOARD_REV}"
           --memory-map "${FW_COMMON_DIR}/memory_map.h"
           --out-dir "${FW_OUT_DIR}"
   DEPENDS app bootloader "${PROJECT_SOURCE_DIR}/tools/fwpack.py"

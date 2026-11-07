@@ -26,12 +26,13 @@
 #include "systime.h"
 #include "tlm_format.h"
 #include "tlm_rings.h"
-#include "uart_link.h"
+#include "link_port.h"
 #include "vl53l1.h"
 #include "watchdog.h"
 #include "i2c2.h"
 
 #define MOTOR_TEST_HOLD_MS  500u
+#define REBOOT_DETACH_MS    20u     /* USB: let the host see the device leave */
 
 extern battery_t g_battery;         /* owned by main.c */
 
@@ -58,7 +59,8 @@ void svc_identity(msg_hello_rsp_t *h)
     h->uid[2] = uid[2];
     h->build_time = FW_BUILD_TIME;
     strncpy(h->git_hash, FW_GIT_HASH, sizeof(h->git_hash) - 1u);
-    strncpy(h->board_name, BOARD_NAME, sizeof(h->board_name) - 1u);
+    _Static_assert(sizeof(BOARD_NAME) <= sizeof(h->board_name), "BOARD_NAME too long");
+    memcpy(h->board_name, BOARD_NAME, sizeof(BOARD_NAME));
 }
 
 void svc_reboot(uint8_t target)
@@ -70,7 +72,9 @@ void svc_reboot(uint8_t target)
     }
     sh->request = (target == REBOOT_BOOTLOADER) ? BL_REQ_STAY
                 : (target == REBOOT_ROM) ? BL_REQ_ROM : BL_REQ_NONE;
+    sh->app_starts = 0u;                    /* deliberate: not a crash */
     __DSB();
+    link_port_detach(REBOOT_DETACH_MS);
     NVIC_SystemReset();
 }
 
@@ -91,9 +95,13 @@ bool svc_save_config(void)
     return ok;
 }
 
-void svc_motor_test(const uint16_t duty[4])
+bool svc_motor_test(const uint16_t duty[4])
 {
+    if (!g_battery.present) {
+        return false;                       /* USB power only: nothing to drive the motors */
+    }
     flight_task_motor_test(duty, time_ms() + MOTOR_TEST_HOLD_MS);
+    return true;
 }
 
 void svc_motor_test_stop(void)
@@ -149,6 +157,7 @@ void svc_status(tlm_status_t *t)
                   (g_battery.present ? STF_BAT_PRESENT : 0u) |
                   ((clock_source() == CLOCK_SRC_HSI) ? STF_HSE_FAIL : 0u) |
                   (comms_host_alive() ? STF_HOST_ALIVE : 0u) |
+                  (link_port_usb_power() ? STF_USB : 0u) |
                   (flight_task_motor_test_active() ? STF_MOTOR_TEST : 0u);
     x.arm_block_extra = (fs.running ? 0u : ARMB_LOOP) | (icm42688_healthy() ? 0u : ARMB_IMU);
     x.bat_state = g_battery.state;

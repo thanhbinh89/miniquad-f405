@@ -3,11 +3,16 @@
  * @brief   End-to-end flows through the device emulator: app <-> bootloader
  *          <-> ROM bootloader, firmware update, parameter persistence and a
  *          short flight with the virtual transmitter.
+ *
+ * Built for both board revisions (test_emu = MQ_BOARD_REV of the build,
+ * test_emu_vN = the other one). On rev 2 the USB serial port disappears on
+ * every MCU reset: the tests wait for it like the configurator does.
  */
 #include <string.h>
 
 #include "app_header.h"
 #include "bl_image_builder.h"
+#include "board.h"
 #include "emu_device.h"
 #include "link.h"
 #include "memory_map.h"
@@ -65,49 +70,140 @@ static uint8_t status_of(const link_packet_t *r)
     return (r == NULL) ? 0xFFu : r->payload[0];
 }
 
+/** Wait until the host has the serial port again (rev 2 re-enumeration). */
+static bool wait_link(uint32_t timeout_ms)
+{
+    for (uint32_t t = 0; t < timeout_ms; t++) {
+        if (emu_link_up()) {
+            flush_rx();
+            return true;
+        }
+        emu_run(1);
+    }
+    return emu_link_up();
+}
+
+/** A request right after a reset/reboot: wait for the port first. */
+static msg_hello_rsp_t hello_after_reset(void)
+{
+    if (BOARD_LINK_USB) {
+        CHECK(!emu_link_up());              /* the port went away with the reset */
+    }
+    CHECK(wait_link(2000));
+    return hello();
+}
+
 /* ------------------------------------------------------------------------ */
 static void test_boot_and_hello(void)
 {
+    printf("    board rev %d (%s)\n", emu_board_rev(), BOARD_LINK_USB ? "USB CDC" : "UART J2");
     emu_init(true);
-    flush_rx();
+    CHECK(wait_link(1000));
     CHECK(emu_mode() == EMU_MODE_APP);
     msg_hello_rsp_t h = hello();
     CHECK(h.status == ST_OK && h.mode == DEV_MODE_APP);
     CHECK(h.app_valid == 1u);
     CHECK(h.board_id == BOARD_ID);
+    CHECK(h.boot_reason == BLR_NONE);
+    CHECK(strcmp(h.board_name, BOARD_NAME) == 0);
 
-    /* power-on: the bootloader listens 300 ms first */
+    /* power-on: 300 ms boot window first */
     emu_init(false);
     flush_rx();
     CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
-    emu_run(310);
+    emu_run(150);
+    CHECK(emu_link_up() == !BOARD_LINK_USB);    /* rev 2: no USB in a normal boot */
+    emu_run(160);
     CHECK(emu_mode() == EMU_MODE_APP);
+    CHECK(wait_link(1000));
 
-    /* a packet inside the window keeps the bootloader */
-    emu_reset_pin();
-    flush_rx();
-    emu_run(50);
-    h = hello();
-    CHECK(h.mode == DEV_MODE_BOOTLOADER);
-    emu_run(1000);
-    CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
     uint8_t t = REBOOT_NORMAL;
+    if (!BOARD_LINK_USB) {
+        /* rev 1: a packet inside the window keeps the bootloader */
+        emu_reset_pin();
+        flush_rx();
+        emu_run(50);
+        h = hello();
+        CHECK(h.mode == DEV_MODE_BOOTLOADER && h.boot_reason == BLR_HOST);
+        emu_run(1000);
+        CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
+        CHECK(status_of(req(MSG_REBOOT, &t, 1, 100)) == ST_OK);
+        emu_run(20);
+        CHECK(emu_mode() == EMU_MODE_APP);
+    }
+
+    /* reset pressed twice: the bootloader stays (and enumerates on rev 2) */
+    emu_reset_pin();
+    emu_run(100);
+    emu_reset_pin();
+    emu_run(10);
+    CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
+    h = hello_after_reset();
+    CHECK(h.mode == DEV_MODE_BOOTLOADER && h.boot_reason == BLR_DBL_RESET && h.app_valid == 1u);
+    emu_run(2000);
+    CHECK(emu_mode() == EMU_MODE_BOOTLOADER);   /* no idle timeout for a deliberate stay */
     CHECK(status_of(req(MSG_REBOOT, &t, 1, 100)) == ST_OK);
     emu_run(20);
     CHECK(emu_mode() == EMU_MODE_APP);
+    h = hello_after_reset();
+    CHECK(h.mode == DEV_MODE_APP);
+}
+
+static void test_crash_loop(void)
+{
+    emu_init(false);
+    emu_run(400);
+    CHECK(emu_mode() == EMU_MODE_APP);
+    /* the app faults soon after every start: after 3 unconfirmed starts
+     * the bootloader keeps the board */
+    int faults = 0;
+    while (emu_mode() == EMU_MODE_APP && faults < 6) {
+        emu_run(500);
+        emu_inject_fault();
+        faults++;
+        emu_run(320);                       /* through the boot window */
+    }
+    CHECK(faults == 3);
+    CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
+    msg_hello_rsp_t h = hello_after_reset();
+    CHECK(h.mode == DEV_MODE_BOOTLOADER && h.boot_reason == BLR_CRASH_LOOP);
+    emu_run(1000);
+    CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
+
+    /* the reset button starts it again (the user is in control) */
+    emu_reset_pin();
+    emu_run(320);
+    CHECK(emu_mode() == EMU_MODE_APP);
+
+    /* an app that runs past the confirmation is not counted */
+    for (int i = 0; i < 4; i++) {
+        emu_run(5200);
+        emu_inject_fault();
+        emu_run(320);
+        CHECK(emu_mode() == EMU_MODE_APP);
+    }
+    /* nor a deliberate reboot */
+    CHECK(wait_link(1000));
+    for (int i = 0; i < 4; i++) {
+        uint8_t t = REBOOT_NORMAL;
+        CHECK(status_of(req(MSG_REBOOT, &t, 1, 200)) == ST_OK);
+        emu_run(400);
+        CHECK(emu_mode() == EMU_MODE_APP);
+        CHECK(wait_link(1000));
+    }
 }
 
 static void test_firmware_update(void)
 {
     emu_init(true);
-    flush_rx();
+    CHECK(wait_link(1000));
     uint8_t t = REBOOT_BOOTLOADER;
     CHECK(status_of(req(MSG_REBOOT, &t, 1, 100)) == ST_OK);
     emu_run(150);
     CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
     flush_rx();
-    msg_hello_rsp_t h = hello();
-    CHECK(h.mode == DEV_MODE_BOOTLOADER && h.app_valid == 1u);
+    msg_hello_rsp_t h = hello_after_reset();
+    CHECK(h.mode == DEV_MODE_BOOTLOADER && h.app_valid == 1u && h.boot_reason == BLR_REQUEST);
 
     static uint8_t img[MM_APP_HEADER_SIZE + 20000];
     uint32_t total = build_test_image(img, 20000u, 0x00020304u);
@@ -150,22 +246,22 @@ static void test_firmware_update(void)
     emu_run(20);
     CHECK(emu_mode() == EMU_MODE_APP);
     flush_rx();
-    h = hello();
+    h = hello_after_reset();
     CHECK(h.mode == DEV_MODE_APP && h.app_version == 0x00020304u);
 
     /* a broken image keeps the board in the bootloader */
     t = REBOOT_BOOTLOADER;
     CHECK(status_of(req(MSG_REBOOT, &t, 1, 100)) == ST_OK);
     emu_run(150);
-    flush_rx();
+    CHECK(wait_link(2000));
     size = 1024u;
     CHECK(status_of(req(MSG_BL_ERASE, &size, 4, 2000)) == ST_OK);
     emu_power_cycle();
     emu_run(1000);
     CHECK(emu_mode() == EMU_MODE_BOOTLOADER);
-    flush_rx();
+    CHECK(wait_link(1000));
     h = hello();
-    CHECK(h.mode == DEV_MODE_BOOTLOADER && h.app_valid == 0u);
+    CHECK(h.mode == DEV_MODE_BOOTLOADER && h.app_valid == 0u && h.boot_reason == BLR_NO_APP);
 }
 
 /* ---- AN3155 helpers ---- */
@@ -183,12 +279,30 @@ static int rom_xfer(const uint8_t *tx, size_t n, uint8_t *rx, size_t want, uint3
 static void test_rom_bootloader(void)
 {
     emu_init(true);
-    flush_rx();
+    CHECK(wait_link(1000));
     uint8_t t = REBOOT_ROM;
     CHECK(status_of(req(MSG_REBOOT, &t, 1, 100)) == ST_OK);
     emu_run(150);
     CHECK(emu_mode() == EMU_MODE_ROM);
     flush_rx();
+    if (BOARD_LINK_USB) {
+        /* rev 2: the ROM loader enumerates as USB DFU, the serial port is gone */
+        emu_run(2000);
+        CHECK(!emu_link_up());
+        emu_power_cycle();
+        emu_run(400);
+        CHECK(emu_mode() == EMU_MODE_APP);
+        CHECK(wait_link(1000));
+        emu_set_boot0(true);
+        emu_power_cycle();
+        emu_run(1000);
+        CHECK(emu_mode() == EMU_MODE_ROM && !emu_link_up());
+        emu_set_boot0(false);
+        emu_power_cycle();
+        emu_run(400);
+        CHECK(emu_mode() == EMU_MODE_APP);
+        return;
+    }
 
     uint8_t rx[300];
     uint8_t sync = 0x7F;
@@ -246,7 +360,7 @@ static void test_rom_bootloader(void)
 static void test_params_persist(void)
 {
     emu_init(true);
-    flush_rx();
+    CHECK(wait_link(1000));
     msg_param_info_rsp_t info;
     const link_packet_t *r = req(MSG_PARAM_INFO, NULL, 0, 100);
     CHECK(status_of(r) == ST_OK);
@@ -276,7 +390,7 @@ static void test_params_persist(void)
     emu_power_cycle();
     emu_run(400);
     CHECK(emu_mode() == EMU_MODE_APP);
-    flush_rx();
+    CHECK(wait_link(1000));
     uint8_t q[3] = { (uint8_t)idx, (uint8_t)(idx >> 8), 1 };
     r = req(MSG_PARAM_GET, q, 3, 100);
     CHECK(status_of(r) == ST_OK);
@@ -285,10 +399,38 @@ static void test_params_persist(void)
     CHECK_NEAR(got, 71.5, 1e-6);
 }
 
+static void test_usb_cable(void)
+{
+    if (!BOARD_LINK_USB) {
+        return;
+    }
+    emu_init(true);
+    CHECK(wait_link(1000));
+    uint8_t s[3] = { STREAM_STATUS, 0, 0 };
+    const link_packet_t *r = req(MSG_STATUS, NULL, 0, 100);
+    CHECK(status_of(r) == ST_OK);
+    tlm_status_t st;
+    memcpy(&st, &r->payload[1], sizeof(st));
+    CHECK((st.flags & STF_USB) != 0u);
+    CHECK((st.flags & STF_BAT_PRESENT) != 0u);
+
+    uint32_t epoch = emu_link_epoch();
+    emu_usb_cable(false);
+    emu_run(5);
+    CHECK(!emu_link_up() && emu_link_epoch() == epoch + 1u);
+    emu_run(1000);
+    CHECK(emu_mode() == EMU_MODE_APP);      /* the quad does not care */
+    emu_usb_cable(true);
+    emu_run(100);
+    CHECK(!emu_link_up());                  /* enumeration takes a moment */
+    CHECK(wait_link(1000));
+    CHECK(status_of(req(MSG_STREAM, s, 3, 100)) == ST_OK);
+}
+
 static void test_flight(void)
 {
     emu_init(true);
-    flush_rx();
+    CHECK(wait_link(1000));
     emu_run(3000);                          /* gyro calibration while still */
     emu_rc_set(4, 2000);                    /* arm */
     emu_run(500);
@@ -333,9 +475,11 @@ static void test_flight(void)
 int main(void)
 {
     RUN(test_boot_and_hello);
+    RUN(test_crash_loop);
     RUN(test_firmware_update);
     RUN(test_rom_bootloader);
     RUN(test_params_persist);
+    RUN(test_usb_cable);
     RUN(test_flight);
     return TT_REPORT();
 }

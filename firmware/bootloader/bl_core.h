@@ -38,6 +38,7 @@ typedef struct {
     bool     boot_request;      /* host asked to start the application    */
     bool     reboot_request;
     uint8_t  reboot_target;     /* REBOOT_*                                */
+    uint8_t  boot_reason;       /* BLR_*: why the bootloader is resident  */
     uint32_t packets;           /* requests handled                       */
 } bl_core_t;
 

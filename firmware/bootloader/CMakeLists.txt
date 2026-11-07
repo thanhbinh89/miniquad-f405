@@ -1,10 +1,11 @@
-# Serial bootloader - must fit in sector 0 (16 KB).
+# Bootloader (USB CDC on board rev 2, USART1 on rev 1) - must fit in sector 0 (16 KB).
 
 add_executable(bootloader
   ${FW_COMMON_SOURCES}
   bl_main.c
   bl_core.c
-  bl_image.c)
+  bl_image.c
+  bl_policy.c)
 
 target_include_directories(bootloader PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(bootloader PRIVATE fw_options)

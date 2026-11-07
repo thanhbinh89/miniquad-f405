@@ -4,7 +4,13 @@
  * simulated quad. Bytes go through the same link protocol as over USB.
  *
  * Besides the byte stream it exposes the "physical" side of the emulated
- * board: virtual transmitter, BOOT0 jumper, power, battery, ground truth.
+ * board: virtual transmitter, BOOT0 jumper, power, USB cable, battery,
+ * ground truth.
+ *
+ * The emulator is built for board v2: like the real USB-C board its serial
+ * port disappears on every MCU reset and comes back once the firmware has
+ * enumerated again. The transport reports that like SerialTransport does
+ * (onLinkDown / onLinkUp) and refuses writes while the port is gone.
  */
 const MODES = ['dead', 'bootloader', 'app', 'rom'];
 
@@ -40,14 +46,18 @@ export class DemoTransport {
     this.open_ = false;
     this.onData = () => {};
     this.onClose = () => {};
+    this.onLinkDown = () => {};
+    this.onLinkUp = () => {};
+    this.link = { up: true, epoch: 0 };
+    this.reconnecting = false;
     this.timer = null;
     this.last = 0;
     this.kind = 'demo';
     this.speed = 1;
   }
 
-  get isOpen() { return this.open_; }
-  describe() { return 'Mô phỏng'; }
+  get isOpen() { return this.open_ && this.link.up; }
+  describe() { return this.open_ && !this.link.up ? 'Mô phỏng: đang chờ USB…' : 'Mô phỏng'; }
   details() { return 'Firmware MiniQuad biên dịch sang WebAssembly, chạy trên quad ảo'; }
 
   async load() {
@@ -66,8 +76,9 @@ export class DemoTransport {
     memory = this.e.memory;
     if (this.e._initialize) this.e._initialize();
     this.e.init(1);                 /* board already running the application */
-    this.e.run(200);
+    this.e.run(600);                /* ...and enumerated on USB */
     this.e.tx();                    /* nobody listened before connecting */
+    this.link = this._linkState();
     if (this.autoTick) this._startClock();
   }
 
@@ -88,6 +99,28 @@ export class DemoTransport {
       this.e.run(n);
       step -= n;
       this._drain();
+      this._checkLink();
+    }
+  }
+
+  _linkState() {
+    if (!this.e.link_up) return { up: true, epoch: 0 };     /* older wasm build */
+    return { up: this.e.link_up() === 1, epoch: this.e.link_epoch() };
+  }
+
+  /* USB re-enumeration, reported like Web Serial would */
+  _checkLink() {
+    const now = this._linkState();
+    const was = this.link;
+    this.link = now;
+    if (!this.open_) return;
+    if (was.up && (!now.up || now.epoch !== was.epoch)) {
+      this.reconnecting = true;
+      this.onLinkDown('thiết bị USB đã ngắt');
+    }
+    if (now.up && (!was.up || now.epoch !== was.epoch)) {
+      this.reconnecting = false;
+      this.onLinkUp();
     }
   }
 
@@ -105,6 +138,16 @@ export class DemoTransport {
   async open() {
     await this.load();
     this.open_ = true;
+    this.reconnecting = false;
+    /* like a real port: it can only be opened while the board is enumerated */
+    for (let i = 0; i < 300 && !this.link.up; i++) {
+      if (!this.autoTick) this.tick(10);
+      else await new Promise((r) => setTimeout(r, 10));
+    }
+    if (!this.link.up) {
+      this.open_ = false;
+      throw new Error('Board mô phỏng chưa kết nối USB');
+    }
   }
 
   async close() {
@@ -120,6 +163,7 @@ export class DemoTransport {
 
   async write(bytes) {
     if (!this.open_) throw new Error('Demo chưa mở');
+    if (!this.link.up) throw new Error('Board đang kết nối lại');
     const size = this.e.in_size();
     for (let o = 0; o < bytes.length; o += size) {
       const chunk = bytes.subarray(o, Math.min(bytes.length, o + size));
@@ -141,6 +185,9 @@ export class DemoTransport {
   battery(soc) { this.e?.battery_set(soc); }
   kick(r, p, y) { this.e?.kick(r, p, y); }
   fault() { this.e?.inject_fault(); }
+  usbCable(plugged) { this.e?.usb_cable?.(plugged ? 1 : 0); }
+  get usbCableIn() { return this.e?.usb_cable_in ? this.e.usb_cable_in() === 1 : true; }
+  get boardRev() { return this.e?.board_rev ? this.e.board_rev() : 1; }
   get led() { return this.e ? this.e.led() === 1 : false; }
   get buzzerHz() { return this.e ? this.e.buzzer_hz() : 0; }
 

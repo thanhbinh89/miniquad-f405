@@ -6,10 +6,12 @@
 
 #include "bl_core.h"
 #include "bl_image.h"
+#include "bl_policy.h"
 #include "bl_image_builder.h"
 #include "crc.h"
 #include "link.h"
 #include "proto.h"
+#include "shared_ram.h"
 #include "tinytest.h"
 
 #define REGION_SIZE (256u * 1024u)
@@ -148,8 +150,57 @@ static void test_boot_refused_when_invalid(void)
     CHECK(req(MSG_BL_VERIFY, NULL, 0) == ST_ERR_VERIFY);
 }
 
+static void test_hello_reports_reason(void)
+{
+    bl_identity_t id = { { 1, 2, 3 }, 0x00010203u, 0u, "abc" };
+    bl_core_init(&s_bl, &s_ops, &id);
+    s_bl.boot_reason = BLR_CRASH_LOOP;
+    CHECK(req(MSG_HELLO, NULL, 0) == ST_OK);
+    msg_hello_rsp_t h;
+    memcpy(&h, s_rsp.payload, sizeof(h));
+    CHECK(h.mode == DEV_MODE_BOOTLOADER);
+    CHECK(h.boot_reason == BLR_CRASH_LOOP);
+    CHECK(h.board_id == BOARD_ID);
+    CHECK(strcmp(h.board_name, BOARD_NAME) == 0);
+}
+
+static void test_boot_policy(void)
+{
+    bl_boot_in_t in = { BL_REQ_NONE, false, true, 0u };
+    CHECK(bl_boot_decide(&in) == BLR_NONE);
+    in.request = BL_REQ_STAY;
+    CHECK(bl_boot_decide(&in) == BLR_REQUEST);
+    in.request = BL_REQ_NONE;
+    in.app_valid = false;
+    CHECK(bl_boot_decide(&in) == BLR_NO_APP);
+    in.app_valid = true;
+    in.dbl_reset = true;
+    CHECK(bl_boot_decide(&in) == BLR_DBL_RESET);
+    in.dbl_reset = false;
+    in.app_starts = BL_CRASH_LIMIT - 1u;
+    CHECK(bl_boot_decide(&in) == BLR_NONE);
+    in.app_starts = BL_CRASH_LIMIT;
+    CHECK(bl_boot_decide(&in) == BLR_CRASH_LOOP);
+    in.request = BL_REQ_STAY;                       /* an update request wins */
+    CHECK(bl_boot_decide(&in) == BLR_REQUEST);
+
+    /* reset causes (on the F4 internal resets also set PINRSTF) */
+    CHECK(bl_reset_is_external(BL_CSR_PINRSTF));
+    CHECK(!bl_reset_is_external(BL_CSR_PINRSTF | BL_CSR_SFTRSTF));
+    CHECK(!bl_reset_is_external(BL_CSR_PINRSTF | BL_CSR_IWDGRSTF));
+    CHECK(!bl_reset_is_external(BL_CSR_PINRSTF | BL_CSR_PORRSTF));
+    CHECK(!bl_reset_is_external(0u));
+    CHECK(bl_app_starts_at_entry(2u, BL_CSR_PINRSTF) == 0u);                     /* button */
+    CHECK(bl_app_starts_at_entry(2u, BL_CSR_PINRSTF | BL_CSR_PORRSTF) == 0u);    /* power */
+    CHECK(bl_app_starts_at_entry(2u, BL_CSR_PINRSTF | BL_CSR_BORRSTF) == 0u);    /* brown-out */
+    CHECK(bl_app_starts_at_entry(2u, BL_CSR_PINRSTF | BL_CSR_SFTRSTF) == 2u);    /* fault */
+    CHECK(bl_app_starts_at_entry(2u, BL_CSR_PINRSTF | BL_CSR_IWDGRSTF) == 2u);   /* watchdog */
+}
+
 int main(void)
 {
+    RUN(test_hello_reports_reason);
+    RUN(test_boot_policy);
     RUN(test_image_check);
     RUN(test_protocol_flash_cycle);
     RUN(test_boot_refused_when_invalid);

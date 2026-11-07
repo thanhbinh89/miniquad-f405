@@ -231,7 +231,10 @@ static void on_motor_test(const link_packet_t *req)
         uint16_t d = rd16(&req->payload[2 + 2 * i]);
         duty[i] = (d > 1000u) ? 1000u : d;
     }
-    svc_motor_test(duty);
+    if (!svc_motor_test(duty)) {
+        reply_status(req, ST_ERR_STATE);
+        return;
+    }
     s_motor_test = true;
     reply_status(req, ST_OK);
 }

@@ -1,6 +1,10 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "arm-base",
@@ -11,22 +15,39 @@
     },
     {
       "name": "release",
-      "displayName": "Firmware (Release, -O2)",
+      "displayName": "Firmware board v2 / USB-C (Release, -O2)",
       "inherits": "arm-base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MQ_BOARD_REV": "2"
+      }
     },
     {
       "name": "debug",
-      "displayName": "Firmware (Debug, -Og)",
+      "displayName": "Firmware board v2 / USB-C (Debug, -Og)",
       "inherits": "arm-base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MQ_BOARD_REV": "2"
+      }
+    },
+    {
+      "name": "release-v1",
+      "displayName": "Firmware board v1 / UART J2 (Release, -O2)",
+      "inherits": "arm-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MQ_BOARD_REV": "1"
+      }
     },
     {
       "name": "host-tests",
       "displayName": "Host unit tests + simulation + emulator",
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build/host-tests",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "wasm-emu",
@@ -34,20 +55,40 @@
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build/wasm-emu",
       "toolchainFile": "${sourceDir}/cmake/wasm32-wasi.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "release",    "configurePreset": "release" },
-    { "name": "debug",      "configurePreset": "debug" },
-    { "name": "host-tests", "configurePreset": "host-tests" },
-    { "name": "wasm-emu",   "configurePreset": "wasm-emu" }
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release-v1",
+      "configurePreset": "release-v1"
+    },
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests"
+    },
+    {
+      "name": "wasm-emu",
+      "configurePreset": "wasm-emu"
+    }
   ],
   "testPresets": [
     {
       "name": "host-tests",
       "configurePreset": "host-tests",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

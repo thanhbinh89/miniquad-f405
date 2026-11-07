@@ -30,7 +30,8 @@ void     svc_identity(msg_hello_rsp_t *h);
 void     svc_reboot(uint8_t target);
 /** Persist g_cfg (blocking flash erase/program). */
 bool     svc_save_config(void);
-void     svc_motor_test(const uint16_t duty[4]);
+/** False when the motors cannot run (no battery). */
+bool     svc_motor_test(const uint16_t duty[4]);
 void     svc_motor_test_stop(void);
 bool     svc_calibrate(uint8_t what);
 void     svc_beep(uint8_t pattern);

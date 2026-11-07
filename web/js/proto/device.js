@@ -5,6 +5,10 @@
  * Works with any transport implementing:
  *   open(opts), close(), write(Uint8Array), onData = (bytes) => {},
  *   onClose = (reason) => {}, isOpen
+ * and optionally onLinkDown = (why) => {} / onLinkUp = () => {} for links
+ * that vanish and come back by themselves (USB CDC re-enumeration on board
+ * v2: every reset of the MCU). Pending requests then fail at once with a
+ * LinkLostError; 'linkdown' / 'linkup' events tell the application.
  * (transport/serial.js for Web Serial, transport/demo.js for the WASM
  * emulator, test/helpers.js for a child process in Node).
  */
@@ -25,6 +29,9 @@ export class ProtoError extends Error {
 
 export class TimeoutError extends Error {}
 
+/** The serial port disappeared (USB re-enumeration, cable pulled). */
+export class LinkLostError extends Error {}
+
 const HEARTBEAT_MS = 1000;
 
 export class Device extends Emitter {
@@ -44,7 +51,12 @@ export class Device extends Emitter {
     this.rawListeners = new Set(); // ROM bootloader takes the byte stream
     transport.onData = (bytes) => this._onBytes(bytes);
     transport.onClose = (reason) => this._onClose(reason);
+    transport.onLinkDown = (why) => this._onLinkDown(why);
+    transport.onLinkUp = () => this._onLinkUp();
   }
+
+  /** The link is gone for now; the transport is looking for the board. */
+  get reconnecting() { return !!this.transport.reconnecting; }
 
   get isOpen() { return this.transport.isOpen; }
 
@@ -179,6 +191,17 @@ export class Device extends Emitter {
     this.emit('close', reason);
   }
 
+  _onLinkDown(why) {
+    this._failAll(new LinkLostError(`Mất kết nối với board (${why})`));
+    this.parser.reset();
+    this.emit('linkdown', why);
+  }
+
+  _onLinkUp() {
+    this.parser.reset();
+    this.emit('linkup');
+  }
+
   /* ---------------- heartbeat ---------------- */
   _startHeartbeat() {
     this._stopHeartbeat();
@@ -207,7 +230,11 @@ export class Device extends Emitter {
   }
 
   async reboot(target = C.REBOOT_NORMAL) {
-    await this.request(C.MSG_REBOOT, new Uint8Array([target]), { retries: 0 });
+    try {
+      await this.request(C.MSG_REBOOT, new Uint8Array([target]), { retries: 0 });
+    } catch (e) {
+      if (!(e instanceof LinkLostError)) throw e;     /* USB left before the reply: it rebooted */
+    }
     this.info = null;
   }
 
@@ -258,5 +285,12 @@ export class Device extends Emitter {
   }
 
   async blVerify() { return decodeBlVerify(await this.request(C.MSG_BL_VERIFY, undefined, { timeout: 2000, allowError: true })); }
-  async blBoot() { await this.request(C.MSG_BL_BOOT, undefined, { retries: 0 }); this.info = null; }
+  async blBoot() {
+    try {
+      await this.request(C.MSG_BL_BOOT, undefined, { retries: 0 });
+    } catch (e) {
+      if (!(e instanceof LinkLostError)) throw e;
+    }
+    this.info = null;
+  }
 }

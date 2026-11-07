@@ -10,7 +10,14 @@
  *
  * The divider (R2/R3 100k/100k) sits after the reverse-polarity MOSFET, so
  * the measured voltage is what the motors see. Below 2.3 V the board is
- * assumed to run from the debug connector (no battery).
+ * assumed to run from another supply (no battery).
+ *
+ * USB power (board rev 2): VBUS feeds a second 3.3 V LDO in parallel with
+ * the battery one, and the battery regulator can then pass current
+ * backwards into the VBAT rail (body diode / enabled pass transistor), so an
+ * unplugged battery may read 2.7..3.3 V. With usb_power set a battery only
+ * counts as present above 3.45 V (absent again below 3.35 V): no false
+ * "critical battery" alarm on the bench, motors stay blocked.
  */
 #ifndef BATTERY_H
 #define BATTERY_H
@@ -26,6 +33,7 @@ typedef struct {
     float   vdda;
     float   mcu_temp;
     bool    present;
+    bool    usb_power;      /* input: VBUS present (battery_set_usb_power) */
     uint8_t state;          /* BAT_* (proto.h) */
     /* internal */
     pt1_t   lpf_comp;
@@ -42,6 +50,8 @@ typedef struct {
 } battery_cal_t;
 
 void battery_init(battery_t *b);
+/** Board powered by USB as well (VBUS present). */
+void battery_set_usb_power(battery_t *b, bool usb_power);
 /**
  * @param raw_vbat  averaged ADC counts of the divider
  * @param raw_vref  averaged ADC counts of VREFINT

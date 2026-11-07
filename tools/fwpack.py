@@ -27,6 +27,7 @@ OFF_IMAGE_SIZE = 0x010
 OFF_IMAGE_CRC = 0x014
 OFF_VERSION = 0x018
 OFF_BUILD_TIME = 0x01C
+OFF_BOARD_ID = 0x020
 OFF_GIT = 0x028
 OFF_BOARD = 0x038
 OFF_HDR_CRC = 0x1FC
@@ -89,6 +90,7 @@ def main() -> int:
     ap.add_argument("--bl-elf", required=True)
     ap.add_argument("--objcopy", required=True)
     ap.add_argument("--version", required=True)
+    ap.add_argument("--board-rev", type=int, default=2, help="MQ_BOARD_REV the images were built for")
     ap.add_argument("--memory-map", required=True)
     ap.add_argument("--out-dir", required=True)
     a = ap.parse_args()
@@ -119,6 +121,7 @@ def main() -> int:
     build_time, = struct.unpack_from("<I", hdr, OFF_BUILD_TIME)
     git = cstr(bytes(hdr[OFF_GIT:OFF_GIT + 16]))
     board = cstr(bytes(hdr[OFF_BOARD:OFF_BOARD + 16]))
+    board_id, = struct.unpack_from("<I", hdr, OFF_BOARD_ID)
 
     out = lambda name: os.path.join(a.out_dir, name)
     app_base = mm["MM_APP_BASE"]
@@ -144,14 +147,18 @@ def main() -> int:
         f.write(ihex([(bl_base, bl)]))
     shutil.copyfile(a.bl_elf, out("miniquad-bootloader.elf"))
 
-    with open(out("miniquad-full.hex"), "w") as f:
-        f.write(ihex([(bl_base, bl), (app_base, app)]))
+    full_hex = ihex([(bl_base, bl), (app_base, app)])
+    with open(out("miniquad-full.hex"), "w", newline="\n") as f:
+        f.write(full_hex)
     gap = app_base - bl_base - len(bl)
     with open(out("miniquad-full.bin"), "wb") as f:
         f.write(bl + b"\xFF" * gap + app)
 
     manifest = {
         "board": board,
+        "board_id": board_id,
+        "board_rev": a.board_rev,
+        "link": "usb-cdc" if a.board_rev >= 2 else "uart-j2",
         "version": "%d.%d.%d" % ((version >> 16) & 0xFF, (version >> 8) & 0xFF, version & 0xFF),
         "version_u32": version,
         "git": git,
@@ -159,14 +166,16 @@ def main() -> int:
         "files": {
             "app": describe(out("miniquad-app.bin"), app_base, app),
             "bootloader": describe(out("miniquad-bootloader.bin"), bl_base, bl),
+            # SWD / DFU first flash (bootloader + app, config sectors untouched)
+            "full_hex": describe(out("miniquad-full.hex"), bl_base, full_hex.encode("ascii")),
         },
         "memory": {k: "0x%08X" % v for k, v in sorted(mm.items())},
     }
     with open(out("manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
 
-    print("fwpack: app %d B (%.1f%% of %d KB), bootloader %d B (%.1f%% of %d KB), v%s %s" % (
-        len(app), 100.0 * len(app) / mm["MM_APP_MAX_SIZE"], mm["MM_APP_MAX_SIZE"] // 1024,
+    print("fwpack: board rev %d (%s), app %d B (%.1f%% of %d KB), bootloader %d B (%.1f%% of %d KB), v%s %s" % (
+        a.board_rev, board, len(app), 100.0 * len(app) / mm["MM_APP_MAX_SIZE"], mm["MM_APP_MAX_SIZE"] // 1024,
         len(bl), 100.0 * len(bl) / mm["MM_BL_SIZE"], mm["MM_BL_SIZE"] // 1024,
         manifest["version"], git))
     return 0

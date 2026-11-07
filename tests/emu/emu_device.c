@@ -1,7 +1,16 @@
 /**
  * @file    emu_device.c
- * @brief   Device emulator core: flash, UART, reset/boot logic, bootloader
- *          and application modes, svc_* services for comms.c.
+ * @brief   Device emulator core: flash, host link, reset/boot logic,
+ *          bootloader and application modes, svc_* services for comms.c.
+ *
+ * Host link per board revision (MQ_BOARD_REV, board.h):
+ *   rev 1  USART1 through a USB-UART adapter: the host's port always exists,
+ *          bytes move at 460800 baud, an MCU reset is invisible to the host.
+ *   rev 2  USB CDC: the port exists only while the firmware runs its USB
+ *          device and the cable is in. Every MCU reset removes it; it comes
+ *          back ~400 ms after the firmware connects (application: always;
+ *          bootloader: only when it stays resident; ROM: never - it would
+ *          enumerate as DFU, not as a serial port).
  */
 #include "emu_device.h"
 
@@ -13,6 +22,7 @@
 #include "battery.h"
 #include "bl_core.h"
 #include "bl_image.h"
+#include "bl_policy.h"
 #include "board.h"
 #include "comms.h"
 #include "config.h"
@@ -36,6 +46,12 @@
 
 #define BL_WINDOW_MS        300u
 #define BL_RESIDENT_IDLE_MS 30000u
+#define USB_ENUM_MS         400u            /* pull-up on -> port usable on the host */
+#if BOARD_LINK_USB
+#define LINK_BYTES_MS       800.0           /* USB full speed bulk, packet per interrupt */
+#else
+#define LINK_BYTES_MS       EMU_UART_BYTES_MS
+#endif
 #define MOTOR_TEST_HOLD_MS  500u
 #define BAT_CAPACITY_AH     0.25
 #define UID0                0x00454D55u     /* "UME" */
@@ -112,7 +128,7 @@ const uint8_t *emu_flash(void)
 }
 
 /* ======================================================================== */
-/* UART                                                                     */
+/* host link: UART (rev 1) / USB CDC (rev 2)                                */
 /* ======================================================================== */
 #define TX_RING_SIZE    4096u               /* same as the firmware */
 #define WIRE_SIZE       65536u
@@ -127,6 +143,63 @@ static uint32_t s_rx_head, s_rx_count;
 static double   s_tx_credit;
 static uint32_t s_block_ms;
 
+/* USB (rev 2) */
+static bool     s_usb_cable = true;         /* cable in: VBUS present        */
+static bool     s_usb_pullup;               /* firmware runs its USB device  */
+static uint32_t s_usb_enum_ms;
+static bool     s_host_port;                /* the host has the serial port  */
+static uint32_t s_link_epoch;               /* bumped when the port vanishes */
+
+static bool link_up(void)
+{
+    return BOARD_LINK_USB ? s_host_port : true;
+}
+
+__attribute__((unused)) static void host_port_set(bool up)
+{
+    if (up == s_host_port) {
+        return;
+    }
+    s_host_port = up;
+    if (!up) {
+        s_link_epoch++;
+        s_rx_head = s_rx_count = 0u;        /* bytes in flight are lost */
+        s_txr_head = s_txr_count = 0u;
+    }
+}
+
+/* firmware starts its USB device (application, resident bootloader) */
+static void link_attach(void)
+{
+#if BOARD_LINK_USB
+    s_usb_pullup = true;
+    s_usb_enum_ms = 0u;
+#endif
+}
+
+/* MCU reset: the USB device disappears at once */
+static void link_detach(void)
+{
+#if BOARD_LINK_USB
+    s_usb_pullup = false;
+    host_port_set(false);
+#endif
+}
+
+static void usb_tick(void)
+{
+#if BOARD_LINK_USB
+    if (!s_usb_pullup || !s_usb_cable) {
+        host_port_set(false);
+        s_usb_enum_ms = 0u;
+        return;
+    }
+    if (!s_host_port && ++s_usb_enum_ms >= USB_ENUM_MS) {
+        host_port_set(true);
+    }
+#endif
+}
+
 size_t emu_uart_read(uint8_t *buf, size_t max)
 {
     size_t n = 0u;
@@ -139,6 +212,9 @@ size_t emu_uart_read(uint8_t *buf, size_t max)
 
 size_t emu_uart_write(const void *data, size_t len)
 {
+    if (!link_up()) {
+        return len;                         /* USB not configured: discarded */
+    }
     if (len > TX_RING_SIZE - s_txr_count) {
         return 0u;
     }
@@ -158,7 +234,7 @@ size_t emu_uart_tx_free(void)
 
 bool emu_uart_tx_idle(void)
 {
-    return s_txr_count == 0u;
+    return s_txr_count == 0u || !link_up();
 }
 
 void emu_cpu_block(uint32_t ms)
@@ -192,7 +268,11 @@ static void uart_reset(void)
 /* one millisecond of wire time */
 static void uart_tick(void)
 {
-    s_tx_credit += EMU_UART_BYTES_MS;
+    if (!link_up()) {
+        s_tx_credit = 0.0;
+        return;
+    }
+    s_tx_credit += LINK_BYTES_MS;
     while (s_tx_credit >= 1.0 && s_txr_count > 0u && s_wire_count < WIRE_SIZE) {
         uint8_t b = s_txr[(s_txr_head + TX_RING_SIZE - s_txr_count) % TX_RING_SIZE];
         s_txr_count--;
@@ -201,13 +281,16 @@ static void uart_tick(void)
         s_wire_count++;
         s_tx_credit -= 1.0;
     }
-    if (s_txr_count == 0u && s_tx_credit > EMU_UART_BYTES_MS) {
-        s_tx_credit = EMU_UART_BYTES_MS;    /* an idle line does not save up */
+    if (s_txr_count == 0u && s_tx_credit > LINK_BYTES_MS) {
+        s_tx_credit = LINK_BYTES_MS;        /* an idle line does not save up */
     }
 }
 
 void emu_rx(const uint8_t *data, size_t len)
 {
+    if (!link_up()) {
+        return;                             /* no port on the host side */
+    }
     for (size_t i = 0u; i < len; i++) {
         if (s_rx_count >= RX_FIFO_SIZE) {
             return;                         /* overrun: bytes lost, like the DMA ring */
@@ -242,6 +325,8 @@ static struct {
     uint32_t request;
     uint32_t boot_count;
     uint32_t reset_csr;
+    uint32_t dbl_token;
+    uint32_t app_starts;
 } s_shared;
 
 static struct {
@@ -264,6 +349,7 @@ void buzzer_tone(uint32_t hz) { s_buzzer_hz = hz; }
 void led_set(bool on) { s_led = on; }
 
 static void reset_to(uint32_t request, bool start_app);
+static void app_start(void);
 
 /* ======================================================================== */
 /* bootloader mode                                                          */
@@ -273,7 +359,7 @@ static link_parser_t s_bl_parser;
 static link_packet_t s_bl_req, s_bl_rsp;
 static uint8_t       s_bl_frame[LINK_FRAME_MAX];
 static bool          s_bl_stay;
-static bool          s_bl_on_request;
+static bool          s_bl_host_seen;
 static uint32_t      s_bl_last_rx;
 static uint32_t      s_bl_busy_acc;
 static bool          s_bl_pending;       /* reply waiting for room in the TX ring */
@@ -305,9 +391,20 @@ static const bl_flash_ops_t s_bl_ops = {
     bl_erase, bl_program, &s_flash[MM_APP_BASE - EMU_FLASH_BASE], MM_APP_MAX_SIZE,
 };
 
-static void bl_start(bool stay, bool on_request)
+/* bl_main.c main(): reset without a boot token */
+static void bl_start(uint32_t csr)
 {
     s_mode = EMU_MODE_BOOTLOADER;
+    s_shared.app_starts = bl_app_starts_at_entry(s_shared.app_starts, csr);
+    bl_boot_in_t in = {
+        .request = s_shared.request,
+        .dbl_reset = (s_shared.dbl_token == BL_TOKEN_DBL_RESET),
+        .app_valid = false,
+        .app_starts = s_shared.app_starts,
+    };
+    s_shared.request = BL_REQ_NONE;
+    s_shared.dbl_token = 0u;
+
     bl_identity_t id = {
         .uid = { UID0, UID1, UID2 },
         .bl_version = FW_VERSION,
@@ -316,10 +413,25 @@ static void bl_start(bool stay, bool on_request)
     };
     bl_core_init(&s_bl, &s_bl_ops, &id);
     link_parser_init(&s_bl_parser);
-    s_bl_stay = stay || !bl_core_app_valid(&s_bl, NULL);
-    s_bl_on_request = on_request;
+    in.app_valid = bl_core_app_valid(&s_bl, NULL);
+    s_bl.boot_reason = bl_boot_decide(&in);
+    s_bl_stay = (s_bl.boot_reason != BLR_NONE);
+    s_bl_host_seen = false;
     s_bl_last_rx = 0u;
     s_bl_pending = false;
+    if (s_bl_stay) {
+        link_attach();                      /* rev 2: enumerate while resident */
+    } else {
+        s_shared.dbl_token = BL_TOKEN_DBL_RESET;    /* boot window armed */
+    }
+}
+
+/* bl_main.c reset_into_app(): boot token, the early hook starts the app */
+static void bl_reset_into_app(void)
+{
+    s_shared.dbl_token = 0u;
+    s_shared.app_starts++;
+    reset_to(BL_REQ_NONE, true);
 }
 
 static void bl_tick(void)
@@ -340,7 +452,12 @@ static void bl_tick(void)
             continue;
         }
         s_bl_last_rx = now;
-        s_bl_stay = true;                   /* the configurator caught the window */
+        s_bl_host_seen = true;
+        if (!s_bl_stay) {                   /* rev 1: the configurator caught the window */
+            s_bl_stay = true;
+            s_shared.dbl_token = 0u;
+            s_bl.boot_reason = BLR_HOST;
+        }
         s_bl_busy_acc = 0u;
         if (bl_core_handle(&s_bl, &s_bl_req, &s_bl_rsp)) {
             size_t n = link_encode(s_bl_rsp.id, s_bl_rsp.seq, s_bl_rsp.payload, s_bl_rsp.len, s_bl_frame);
@@ -355,14 +472,20 @@ static void bl_tick(void)
 
     if ((s_bl.boot_request || s_bl.reboot_request) && emu_uart_tx_idle() && !s_bl_pending) {
         if (s_bl.boot_request) {
-            reset_to(BL_REQ_NONE, true);
+            s_shared.app_starts = 0u;
+            bl_reset_into_app();
             return;
         }
         switch (s_bl.reboot_target) {
         case REBOOT_BOOTLOADER: reset_to(BL_REQ_STAY, false); return;
         case REBOOT_ROM:        reset_to(BL_REQ_ROM, false); return;
         default:
-            reset_to(BL_REQ_NONE, bl_core_app_valid(&s_bl, NULL));
+            if (bl_core_app_valid(&s_bl, NULL)) {
+                s_shared.app_starts = 0u;
+                bl_reset_into_app();
+            } else {
+                reset_to(BL_REQ_NONE, false);
+            }
             return;
         }
     }
@@ -370,13 +493,14 @@ static void bl_tick(void)
     if (!s_bl_stay) {
         s_led = true;
         if (now >= BL_WINDOW_MS) {
-            reset_to(BL_REQ_NONE, true);
+            bl_reset_into_app();
         }
     } else {
-        s_led = ((now / 250u) % 2u) == 0u;
-        if (s_bl_on_request && (now - s_bl_last_rx) > BL_RESIDENT_IDLE_MS &&
+        bool connected = BOARD_LINK_USB ? link_up() : s_bl_host_seen;
+        s_led = ((now / (connected ? 250u : 60u)) % 2u) == 0u;
+        if (s_bl.boot_reason == BLR_REQUEST && !s_bl_host_seen && (now - s_bl_last_rx) > BL_RESIDENT_IDLE_MS &&
             bl_core_app_valid(&s_bl, NULL)) {
-            reset_to(BL_REQ_NONE, true);
+            bl_reset_into_app();
         }
     }
 }
@@ -395,6 +519,7 @@ static bool       s_reboot_pending;
 static uint8_t    s_reboot_target;
 static uint32_t   s_reboot_t0;
 static uint32_t   s_rng = 0x1234567u;
+static bool       s_app_confirmed;
 
 static size_t port_read(uint8_t *buf, size_t max) { return emu_uart_read(buf, max); }
 static size_t port_write(const void *d, size_t len) { return emu_uart_write(d, len); }
@@ -456,6 +581,8 @@ static void drain_queues(void)
 static void app_start(void)
 {
     s_mode = EMU_MODE_APP;
+    s_app_confirmed = false;
+    link_attach();                          /* rev 2: the app always runs USB */
 
     /* the vehicle keeps flying (or lying) while the MCU restarts */
     quadsim_t keep = s_sim.quad;
@@ -483,8 +610,9 @@ static void app_start(void)
     s_cfg_busy_ms = 0u;
     s_reboot_pending = false;
 
-    LOG_I("MiniQuad-F405 %s (%s), clock HSE [emulator]", FW_VERSION_STR, FW_GIT_HASH);
-    LOG_I("reset csr 0x%08x, boot #%u", s_shared.reset_csr, s_shared.boot_count);
+    LOG_I("%s %s (%s), clock HSE [emulator]", BOARD_NAME, FW_VERSION_STR, FW_GIT_HASH);
+    LOG_I("reset csr 0x%08x, boot #%u, unconfirmed starts %u", s_shared.reset_csr, s_shared.boot_count,
+          s_shared.app_starts);
     LOG_I("config: %s (%u entries)", loaded ? "loaded" : "defaults",
           (unsigned)config_store_info()->entries_loaded);
     if (s_fault.valid) {
@@ -561,6 +689,7 @@ static void app_tick(void)
     if ((now % 5u) == 0u) {
         double v = s->quad.v_bat;
         uint16_t raw = (uint16_t)fmin(4095.0, v / VBAT_DIVIDER / 3.3 * 4095.0 + 0.5);
+        battery_set_usb_power(&s_bat, BOARD_LINK_USB && s_usb_cable);
         battery_update(&s_bat, &s_bat_cal, raw, 1500u, 957u, 0.005f);   /* ~35 C */
         s->in.bat.present = s_bat.present;
         s->in.bat.v_comp = s_bat.v_comp;
@@ -569,6 +698,11 @@ static void app_tick(void)
     }
 
     sim_step(s);                            /* physics + fc_update() */
+
+    if (!s_app_confirmed && s_mode_ms >= SHARED_APP_CONFIRM_MS) {
+        s_shared.app_starts = 0u;           /* main.c: this start was no crash */
+        s_app_confirmed = true;
+    }
 
     if (!emu_cpu_blocked()) {
         comms_task();
@@ -581,6 +715,7 @@ static void app_tick(void)
     }
     if (s_reboot_pending && (emu_uart_tx_idle() || (now - s_reboot_t0) >= 100u)) {
         s_reboot_pending = false;
+        s_shared.app_starts = 0u;           /* svc_reboot(): deliberate, not a crash */
         reset_to((s_reboot_target == REBOOT_BOOTLOADER) ? BL_REQ_STAY
                  : (s_reboot_target == REBOOT_ROM) ? BL_REQ_ROM : BL_REQ_NONE, false);
         return;
@@ -619,11 +754,12 @@ void svc_identity(msg_hello_rsp_t *h)
     } else {
         strncpy(h->git_hash, FW_GIT_HASH, sizeof(h->git_hash) - 1u);
     }
-    strncpy(h->board_name, BOARD_NAME, sizeof(h->board_name) - 1u);
+    memcpy(h->board_name, BOARD_NAME, sizeof(BOARD_NAME));
 }
 
 void svc_reboot(uint8_t target)
 {
+    s_shared.app_starts = 0u;
     s_reboot_pending = true;
     s_reboot_target = target;
     s_reboot_t0 = s_sim.ms;
@@ -646,11 +782,15 @@ bool svc_save_config(void)
     return ok;
 }
 
-void svc_motor_test(const uint16_t duty[4])
+bool svc_motor_test(const uint16_t duty[4])
 {
+    if (!s_bat.present) {
+        return false;
+    }
     memcpy(s_mt_duty, duty, sizeof(s_mt_duty));
     s_mt_active = true;
     s_mt_until = s_sim.ms + MOTOR_TEST_HOLD_MS;
+    return true;
 }
 
 void svc_motor_test_stop(void)
@@ -697,7 +837,8 @@ void svc_status(tlm_status_t *t)
     x.time_ms = s->ms;
     x.flags_clear = STF_BAT_PRESENT | STF_MOTOR_TEST | (s_tof_on ? 0u : (STF_TOF_OK | STF_TOF_VALID));
     x.flags_set = STF_IMU_OK | (s_tof_on ? STF_TOF_OK : 0u) | (s_bat.present ? STF_BAT_PRESENT : 0u) |
-                  (comms_host_alive() ? STF_HOST_ALIVE : 0u) | (s_mt_active ? STF_MOTOR_TEST : 0u);
+                  (comms_host_alive() ? STF_HOST_ALIVE : 0u) | (s_mt_active ? STF_MOTOR_TEST : 0u) |
+                  ((BOARD_LINK_USB && s_usb_cable) ? STF_USB : 0u);
     x.bat_state = s_bat.state;
     x.v_comp = s_bat.v_comp;
     x.v_slow = s_bat.v_slow;
@@ -747,49 +888,60 @@ void svc_fault(msg_fault_info_rsp_t *f)
 #define CSR_POR     0x0C000000u     /* PORRSTF | PINRSTF */
 #define CSR_SFT     0x14000000u     /* SFTRSTF | PINRSTF */
 
-static void boot_flash(uint32_t request, bool start_app)
+/* code in sector 0 starts: the early hook, then bl_main.c main() */
+static void boot_flash(bool boot_token, uint32_t csr)
 {
     if (s_flash[0] == 0xFFu && s_flash[1] == 0xFFu && s_flash[2] == 0xFFu && s_flash[3] == 0xFFu) {
         s_mode = EMU_MODE_DEAD;             /* no bootloader: nothing runs */
         s_led = false;
         return;
     }
-    if (request == BL_REQ_ROM) {
+    if (boot_token) {
+        app_start();                        /* early hook: validated app, no window */
+        return;
+    }
+    if (s_shared.request == BL_REQ_ROM) {
+        s_shared.request = BL_REQ_NONE;
         s_mode = EMU_MODE_ROM;
         rom_reset();
         return;
     }
-    bl_start(request == BL_REQ_STAY, request == BL_REQ_STAY);
-    if (start_app && !s_bl_stay) {
-        app_start();                        /* boot token: skip the window */
-    }
+    bl_start(csr);
 }
 
-static void reset_to(uint32_t request, bool start_app)
+static void mcu_reset(uint32_t csr)
 {
+    link_detach();
     uart_reset();
     s_block_ms = 0u;
     s_mode_ms = 0u;
     s_led = false;
     s_buzzer_hz = 0u;
     s_shared.boot_count++;
-    s_shared.reset_csr = CSR_SFT;
+    s_shared.reset_csr = csr;
+}
+
+/* NVIC_SystemReset() with a mailbox request / the bootloader's boot token */
+static void reset_to(uint32_t request, bool start_app)
+{
+    mcu_reset(CSR_SFT);
     s_shared.request = request;
     if (s_boot0) {
         s_mode = EMU_MODE_ROM;
         rom_reset();
         return;
     }
-    boot_flash(request, start_app);
+    boot_flash(start_app, CSR_SFT);
 }
 
 void emu_start_from_flash(void)
 {
     uart_flush_to_wire();
+    link_detach();
     uart_reset();
     s_block_ms = 0u;
     s_mode_ms = 0u;
-    boot_flash(BL_REQ_NONE, false);
+    boot_flash(false, s_shared.reset_csr);
 }
 
 /* ---------------- factory content ---------------- */
@@ -827,7 +979,7 @@ static void factory_flash(void)
     h.build_time = FW_BUILD_TIME;
     h.board_id = BOARD_ID;
     strncpy(h.git_hash, FW_GIT_HASH, sizeof(h.git_hash) - 1u);
-    strncpy(h.board_name, BOARD_NAME, sizeof(h.board_name) - 1u);
+    memcpy(h.board_name, BOARD_NAME, sizeof(BOARD_NAME));
     strncpy(h.fw_name, "miniquad-app", sizeof(h.fw_name) - 1u);
     memcpy(region, &h, sizeof(h));
     uint32_t hc = crc32(region, APP_HEADER_CRC_OFFSET);
@@ -838,17 +990,14 @@ static void power_on(bool skip_window)
 {
     memset(&s_shared, 0, sizeof(s_shared));
     memset(&s_fault, 0, sizeof(s_fault));
-    uart_reset();
-    s_block_ms = 0u;
-    s_mode_ms = 0u;
+    mcu_reset(CSR_POR);
     s_shared.boot_count = 1u;
-    s_shared.reset_csr = CSR_POR;
     if (s_boot0) {
         s_mode = EMU_MODE_ROM;
         rom_reset();
         return;
     }
-    boot_flash(BL_REQ_NONE, skip_window);
+    boot_flash(skip_window, CSR_POR);
 }
 
 void emu_init(bool skip_window)
@@ -865,6 +1014,11 @@ void emu_init(bool skip_window)
     s_boot0 = false;
     s_sim_ready = false;
     s_wire_head = s_wire_count = 0u;
+    s_usb_cable = true;
+    s_usb_pullup = false;
+    s_host_port = false;
+    s_usb_enum_ms = 0u;
+    s_link_epoch = 0u;
     factory_flash();
     power_on(skip_window);
 }
@@ -876,17 +1030,13 @@ void emu_power_cycle(void)
 
 void emu_reset_pin(void)
 {
-    uart_reset();
-    s_block_ms = 0u;
-    s_mode_ms = 0u;
-    s_shared.boot_count++;
-    s_shared.reset_csr = CSR_PIN;
+    mcu_reset(CSR_PIN);
     if (s_boot0) {
         s_mode = EMU_MODE_ROM;
         rom_reset();
         return;
     }
-    boot_flash(BL_REQ_NONE, false);
+    boot_flash(false, CSR_PIN);
 }
 
 void emu_set_boot0(bool high)
@@ -919,6 +1069,7 @@ void emu_run(uint32_t ms)
         } else {
             uart_tick();
         }
+        usb_tick();
     }
 }
 
@@ -991,7 +1142,33 @@ void emu_inject_fault(void)
     s_fault.mmfar = 0xE000EDF8u;
     s_fault.bfar = 0xE000EDF8u;
     s_fault.uptime_ms = s_sim.ms;
-    reset_to(BL_REQ_NONE, true);
+    reset_to(BL_REQ_NONE, false);           /* fault handler: NVIC_SystemReset */
+}
+
+/* ---------------- host link ---------------- */
+bool emu_link_up(void)
+{
+    return link_up();
+}
+
+uint32_t emu_link_epoch(void)
+{
+    return s_link_epoch;
+}
+
+void emu_usb_cable(bool plugged)
+{
+    s_usb_cable = plugged;
+}
+
+bool emu_usb_cable_in(void)
+{
+    return s_usb_cable;
+}
+
+int emu_board_rev(void)
+{
+    return MQ_BOARD_REV;
 }
 
 /* ---------------- outputs ---------------- */

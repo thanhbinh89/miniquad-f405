@@ -347,6 +347,9 @@ static void update_arming(const fc_input_t *in)
     if (in->bat.present && in->bat.state == BAT_CRIT) {
         b |= ARMB_BATTERY;
     }
+    if (!in->bat.present) {
+        b |= ARMB_NO_BAT;                   /* e.g. USB power only: motors have no supply */
+    }
     if (in->motor_test_active) {
         b |= ARMB_MOTOR_TEST;
     }

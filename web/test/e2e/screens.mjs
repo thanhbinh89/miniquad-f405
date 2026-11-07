@@ -1,8 +1,9 @@
 /**
  * Browser end-to-end check of the configurator in demo mode (the WASM
- * emulator): every page renders without errors, a short flight with the
- * virtual transmitter, a firmware update through the bootloader and a ROM
- * bootloader recovery. Screenshots go to web/test/e2e/out/.
+ * emulator of board v2): every page renders without errors, a short flight
+ * with the virtual transmitter, a firmware update through the bootloader
+ * (two USB re-enumerations), the USB cable pulled and plugged back, the
+ * bootloader entered and left. Screenshots go to web/test/e2e/out/.
  *
  *   npm i -D playwright && npx playwright install chromium   (once)
  *   node test/e2e/screens.mjs                                 (from web/)
@@ -41,6 +42,9 @@ const fail = (msg) => { errors.push(msg); console.error('FAIL', msg); };
 
 await page.goto(base);
 await shot('00-connect');
+await page.click('button:has-text("Board v1 · UART J2")');
+await shot('00-connect-v1');
+await page.click('button:has-text("Board v2 · USB-C")');
 await page.click('button:has-text("Chạy mô phỏng")');
 await page.waitForSelector('#rail button[data-view=tuning]:not([disabled])', { timeout: 10000 });
 await page.waitForTimeout(1500);
@@ -70,22 +74,41 @@ await shot('03-flight');
 await page.keyboard.press('Space');
 await page.waitForTimeout(2500);
 
-/* firmware update + ROM recovery with the images in web/firmware */
+/* firmware update with the images in web/firmware (built for board v2) */
 if (existsSync(join(WEB, 'firmware/manifest.json'))) {
-  page.on('dialog', (d) => d.accept());
   await page.click('#rail button[data-view=firmware]');
   await page.waitForSelector('button:has-text("Dùng bản này")', { timeout: 5000 });
   await page.click('button:has-text("Dùng bản này")');
   await page.click('button:has-text("Nạp firmware")');
   await page.click('dialog button:has-text("Nạp firmware")');
-  await page.waitForSelector('.fw-log li.ok', { timeout: 20000 }).catch(() => fail('firmware update did not finish'));
-  await page.click('button:has-text("Dùng bản build mới nhất")');
-  await page.waitForTimeout(500);
-  await page.click('button:has-text("Nạp khôi phục")');
-  await page.click('dialog button:has-text("Nạp khôi phục")');
-  await page.waitForFunction(() => document.querySelectorAll('.fw-log li.ok').length >= 2, null, { timeout: 40000 }).catch(() => fail('ROM recovery did not finish'));
+  await page.waitForSelector('.fw-log li.ok', { timeout: 30000 }).catch(() => fail('firmware update did not finish'));
+  const lost = await page.evaluate(() => window.mq.transport.lost ?? 0);
   await shot('04-firmware-done');
+  void lost;
 }
+
+/* USB cable pulled: the page waits, then finds the board again */
+await page.click('#rail button[data-view=dashboard]');
+await page.waitForTimeout(800);
+await page.evaluate(() => window.mq.transport.usbCable(false));
+await page.waitForSelector('.callout:has-text("Mất kết nối USB")', { timeout: 3000 }).catch(() => fail('no "link lost" callout'));
+await shot('05-usb-unplugged');
+await page.evaluate(() => window.mq.transport.usbCable(true));
+await page.waitForFunction(() => window.mq.inApp && !window.mq.linkDown, null, { timeout: 8000 }).catch(() => fail('did not reconnect after the cable came back'));
+await page.waitForTimeout(800);
+await shot('06-usb-back');
+
+/* into the bootloader and back (each one a USB re-enumeration) */
+await page.click('#rail button[data-view=firmware]');
+await page.waitForTimeout(500);
+await page.click('button:has-text("Vào bootloader")');
+await page.waitForFunction(() => window.mq.hello?.mode === 0, null, { timeout: 10000 }).catch(() => fail('bootloader not reached'));
+await page.waitForTimeout(500);
+await shot('07-bootloader');
+await page.click('button:has-text("Khởi động lại")');
+await page.waitForFunction(() => window.mq.inApp, null, { timeout: 10000 }).catch(() => fail('application did not come back'));
+await page.waitForTimeout(500);
+await shot('08-back-in-app');
 
 await browser.close();
 server.close();

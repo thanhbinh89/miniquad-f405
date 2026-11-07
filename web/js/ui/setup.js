@@ -78,7 +78,7 @@ export class SetupView {
     const rx = panel('J3', 'bộ thu PPM',
       h('div', { class: 'grid cols-2', style: { alignItems: 'start' } },
         h('div', h('div', { class: 'meters' }, this.rcMeters), this.rcNote,
-          h('div', { style: { maxWidth: '320px', marginTop: '12px' } }, boardSVG({ focus: 'ppm', scale: 0.8 }))),
+          h('div', { style: { maxWidth: '320px', marginTop: '12px' } }, boardSVG({ rev: this.app.boardRev, focus: 'ppm', scale: 0.8 }))),
         h('div', ['rc_map_roll', 'rc_map_pitch', 'rc_map_thr', 'rc_map_yaw', 'rc_ch_arm', 'rc_ch_mode', 'mode_low', 'mode_mid', 'mode_high', 'rc_ch_beeper', 'ppm_falling'].map((n) => paramRow(app, n)))));
 
     root.append(
@@ -102,8 +102,8 @@ export class SetupView {
     const pt = this.app.params;
     const yaw = pt.get('board_yaw')?.value ?? 0;
     const out = !!pt.get('props_out')?.value;
-    this.orientBox.replaceChildren(boardSVG({ props: true, boardYaw: yaw, propsOut: out, scale: 0.9 }));
-    this.mtBoard.replaceChildren(boardSVG({ props: true, boardYaw: yaw, propsOut: out, motorLabels: this.duty.map((d) => `${Math.round(d / 10)}%`), scale: 0.8 }));
+    this.orientBox.replaceChildren(boardSVG({ rev: this.app.boardRev, props: true, boardYaw: yaw, propsOut: out, scale: 0.9 }));
+    this.mtBoard.replaceChildren(boardSVG({ rev: this.app.boardRev, props: true, boardYaw: yaw, propsOut: out, motorLabels: this.duty.map((d) => `${Math.round(d / 10)}%`), scale: 0.8 }));
   }
 
   async calibrate(what, label) {
@@ -165,7 +165,8 @@ export class SetupView {
   send() {
     if (!this.mtActive || !this.app.connected) return;
     this.app.device.motorTest(this.duty).catch((e) => {
-      this.app.toast(`Test motor: ${e.message}`, 'err');
+      const noBat = this.app.status && !(this.app.status.flags & C.STF_BAT_PRESENT);
+      this.app.toast(noBat ? 'Test motor: chưa cắm pin (board đang chạy bằng nguồn USB, motor không có điện).' : `Test motor: ${e.message}`, 'err');
       this.stopMotors();
     });
   }

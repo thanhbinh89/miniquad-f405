@@ -62,6 +62,7 @@ static bool on_hello(bl_core_t *bl, const link_packet_t *req, link_packet_t *rsp
     h.fw_version = bl->id.bl_version;
     uint32_t app_version = 0u;
     h.app_valid = bl_core_app_valid(bl, &app_version) ? 1u : 0u;
+    h.boot_reason = bl->boot_reason;
     h.app_version = app_version;
     h.app_max_size = bl->flash->region_size;
     memcpy(h.uid, bl->id.uid, sizeof(h.uid));
@@ -69,7 +70,8 @@ static bool on_hello(bl_core_t *bl, const link_packet_t *req, link_packet_t *rsp
     if (bl->id.git_hash != NULL) {
         strncpy(h.git_hash, bl->id.git_hash, sizeof(h.git_hash) - 1u);
     }
-    strncpy(h.board_name, BOARD_NAME, sizeof(h.board_name) - 1u);
+    _Static_assert(sizeof(BOARD_NAME) <= sizeof(h.board_name), "BOARD_NAME too long");
+    memcpy(h.board_name, BOARD_NAME, sizeof(BOARD_NAME));
     return reply(rsp, req, &h, sizeof(h));
 }
 

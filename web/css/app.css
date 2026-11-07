@@ -120,6 +120,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: 0; }
 .led.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .led.busy { background: var(--gold); }
 .led.err { background: var(--err); }
+.led.warn { background: var(--warn); animation: blink 0.9s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .led.warn { animation: none; } }
 
 nav.rail {
   border-right: 1px solid var(--line);
@@ -333,7 +336,9 @@ select { padding-right: 24px; }
 .board-svg .pad.lo { fill: none; stroke: var(--gold); stroke-width: 0.3; }
 .board-svg text { fill: var(--silk); font-family: var(--font); font-size: 2.1px; font-weight: 600; }
 .board-svg text.small { font-size: 1.6px; font-weight: 500; fill: var(--silk-2); }
+.board-svg text.tiny { font-size: 1.05px; font-weight: 500; fill: var(--silk-2); }
 .board-svg text.call { fill: var(--gold); font-size: 2.2px; }
+.board-svg text.on-gold { fill: var(--mask); }
 .board-svg .leader { stroke: var(--gold); stroke-width: 0.25; fill: none; }
 .board-svg .prop { fill: none; stroke: var(--silk-3); stroke-width: 0.3; stroke-dasharray: 1 1; }
 .board-svg .nose { fill: var(--gold); }
