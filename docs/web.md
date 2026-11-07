@@ -4,7 +4,7 @@ HTML/CSS/JavaScript thuần (ES modules), không framework, không bước build
 
 ## Dùng
 
-- Chrome, Edge hoặc Opera trên máy tính (Web Serial). Trang phải mở qua HTTPS (GitLab Pages) hoặc `http://localhost`.
+- Chrome, Edge hoặc Opera trên máy tính (Web Serial). Trang phải mở qua HTTPS (GitHub Pages: <https://thanhbinh89.github.io/miniquad-f405/>) hoặc `http://localhost`.
 - **Board v2:** cắm cáp USB-C vào J2, bấm *Kết nối*, chọn **MiniQuad-F405** (danh sách chỉ hiện cổng có VID:PID 0483:5740). Không cần driver (Windows 10/11 usbser, Linux cdc_acm, macOS). Chỉ cần USB là cấu hình / nạp firmware được; motor cần pin.
 - **Board v1:** chọn *Board v1 · UART J2* trên màn hình kết nối; mạch USB-UART 3,3 V vào J2: chân 5 (TX) → RX, chân 6 (RX) → TX, chân 7 → GND. 460800 baud.
 - Linux: thêm người dùng vào nhóm `dialout` nếu không mở được cổng.
@@ -82,6 +82,10 @@ cd web && npm test
 - `demo.test.js`: bản WebAssembly qua `DemoTransport`.
 - `test/e2e/screens.mjs` (tuỳ chọn, Playwright): mở trang thật, đi qua mọi trang, bay, nạp firmware, rút/cắm cáp USB, vào/ra bootloader trong chế độ mô phỏng, chụp màn hình.
 
-## Deploy lên GitLab Pages
+## Deploy lên GitHub Pages
 
-Job `pages` trong `.gitlab-ci.yml` (nhánh mặc định) chép `web/` và firmware vừa build (`manifest.json`, `.bin`, `.hex`) vào `public/firmware/` (board v2) và `public/firmware/v1/` (board v1). Trang chọn đúng thư mục theo board đang nối. Trang dùng đường dẫn tương đối nên chạy được ở bất kỳ URL nào của Pages.
+Workflow `.github/workflows/ci.yml` chạy ở mỗi lần push: `firmware` (board v2 release + debug, board v1), `wasm-emulator`, `host-tests`, `web-tests`. Khi push lên nhánh mặc định (`main`) và mọi job đều qua, job `pages` chép `web/` và firmware vừa build (`manifest.json`, `.bin`, `.hex`) vào `firmware/` (board v2) và `firmware/v1/` (board v1) của trang rồi deploy bằng `actions/deploy-pages`. Trang chọn đúng thư mục theo board đang nối, và dùng đường dẫn tương đối nên chạy được dưới `https://<user>.github.io/<repo>/`.
+
+- Địa chỉ: <https://thanhbinh89.github.io/miniquad-f405/>
+- Cài đặt một lần trên GitHub: *Settings > Pages > Build and deployment > Source* chọn **GitHub Actions**. (Repo private cần gói GitHub trả phí mới có Pages.)
+- Mỗi lần chạy CI, firmware của cả hai board có trong *Artifacts* (`miniquad-f405-firmware`, giữ 90 ngày).

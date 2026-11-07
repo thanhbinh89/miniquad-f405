@@ -1,0 +1,167 @@
+# MiniQuad-F405 CI (GitHub Actions)
+#
+#   firmware      : board v2 (USB-C, default; release + debug) and board v1
+#                   (UART J2) with arm-none-eabi-gcc from Ubuntu
+#   wasm-emulator : WebAssembly device emulator for the web demo
+#                   (clang + wasi-libc)
+#   host-tests    : unit tests (USB CDC stack, bootloader policy ...), flight
+#                   simulation, emulators of both boards
+#   web-tests     : web configurator tests against the native emulators and
+#                   the firmware images just built
+#   pages         : default branch only - GitHub Pages = web configurator +
+#                   the firmware just built (the "Firmware" page offers it as
+#                   "Bản build mới nhất": firmware/ for board v2, firmware/v1/
+#                   for board v1). One-time setup: Settings > Pages >
+#                   Build and deployment > Source: GitHub Actions.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a newer push replaces a running pipeline, except on the default branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # git hash + commit time in fw_version.h
+      - name: Install arm-none-eabi-gcc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi > /dev/null
+          arm-none-eabi-gcc --version | head -n 1
+      - name: Build board v2 (release, debug) and board v1 (release)
+        run: |
+          for preset in release debug release-v1; do
+            cmake --preset "$preset"
+            cmake --build --preset "$preset" -j"$(nproc)"
+          done
+      - name: Upload firmware images
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniquad-f405-firmware
+          path: |
+            build/release/out/
+            build/release-v1/out/
+          if-no-files-found: error
+          retention-days: 90
+
+  wasm-emulator:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install clang + wasi-libc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends clang lld wasi-libc libclang-rt-18-dev-wasm32 > /dev/null
+      - name: Build web/demo/miniquad-emu.wasm
+        run: |
+          cmake --preset wasm-emu
+          cmake --build --preset wasm-emu -j"$(nproc)"
+      - name: Upload the emulator
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-emulator
+          path: web/demo/miniquad-emu.wasm
+          if-no-files-found: error
+          retention-days: 30
+
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build
+        run: |
+          cmake --preset host-tests
+          cmake --build --preset host-tests -j"$(nproc)"
+      - name: Test
+        run: ctest --preset host-tests --output-on-failure
+
+  web-tests:
+    runs-on: ubuntu-24.04
+    needs: [firmware, wasm-emulator]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # the release builds are used by the firmware update tests
+      - uses: actions/download-artifact@v4
+        with:
+          name: miniquad-f405-firmware
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-emulator
+          path: web/demo
+      # the native emulators (board v2 + v1) let the tests drive the real C
+      # protocol code
+      - name: Build the emulators
+        run: |
+          cmake --preset host-tests
+          cmake --build --preset host-tests -j"$(nproc)" --target miniquad-emu miniquad-emu-v1
+      - name: Test
+        working-directory: web
+        run: npm test
+
+  pages:
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    needs: [firmware, wasm-emulator, host-tests, web-tests]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: miniquad-f405-firmware
+          path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-emulator
+          path: web/demo
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/firmware/v1
+          cp -r web/index.html web/css web/js web/fonts web/img web/demo _site/
+          cp THIRD_PARTY.md _site/
+          for f in manifest.json miniquad-app.bin miniquad-app.hex miniquad-bootloader.bin miniquad-bootloader.hex miniquad-full.hex; do
+            cp "build/release/out/$f" _site/firmware/
+            cp "build/release-v1/out/$f" _site/firmware/v1/
+          done
+          find _site -type f | sort
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4

@@ -255,7 +255,7 @@ export class FirmwareView {
     } catch (e) {
       this.manifest = null;
       this.renderDownloads();
-      this.manifestBox.textContent = 'Trang này chưa kèm bản build (chỉ có khi deploy bằng GitLab CI). Hãy chọn file từ máy.';
+      this.manifestBox.textContent = 'Trang này chưa kèm bản build (chỉ có trên GitHub Pages do CI deploy). Hãy chọn file từ máy.';
     }
   }
 

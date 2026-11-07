@@ -45,7 +45,7 @@ reset ─► startup_early_hook()   (trước mọi khởi tạo)
 
 ## Cập nhật qua trang web (thường dùng)
 
-Trang *Firmware* > *Cập nhật*: chọn `miniquad-app.bin` (hoặc `.hex`, `miniquad-full.bin`), hoặc *Bản build mới nhất* khi trang chạy trên GitLab Pages. Trang kiểm tra file trước (CRC, board), rồi:
+Trang *Firmware* > *Cập nhật*: chọn `miniquad-app.bin` (hoặc `.hex`, `miniquad-full.bin`), hoặc *Bản build mới nhất* khi trang chạy trên GitHub Pages. Trang kiểm tra file trước (CRC, board), rồi:
 
 1. `REBOOT(1)` → board nhả D+ (v2), khởi động lại và ở lại bootloader (yêu cầu nằm trong RAM chia sẻ).
 2. Board v2: cổng USB biến mất rồi xuất hiện lại với tên “MiniQuad-F405 Bootloader”; trang tự mở lại cổng (Chrome giữ quyền vì VID/PID/serial không đổi) và chờ HELLO của bootloader (tối đa 12 s).

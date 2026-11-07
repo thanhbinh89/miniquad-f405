@@ -1,5 +1,7 @@
 # MiniQuad-F405
 
+[![CI](https://github.com/thanhbinh89/miniquad-f405/actions/workflows/ci.yml/badge.svg)](https://github.com/thanhbinh89/miniquad-f405/actions/workflows/ci.yml)
+
 Firmware bare-metal và trang cấu hình web cho flight controller MiniQuad-F405: STM32F405RGT6, IMU ICM-42688-P, cảm biến khoảng cách VL53L1 (ToF), 4 motor coreless (brushed) qua MOSFET, pin 1S, thu PPM.
 
 Hai phiên bản board dùng chung mã nguồn (tuỳ chọn CMake `MQ_BOARD_REV`):
@@ -15,7 +17,7 @@ Hai phiên bản board dùng chung mã nguồn (tuỳ chọn CMake `MQ_BOARD_REV
 - **Vòng điều khiển 1 kHz** khởi chạy từ chân ngắt data-ready của IMU: lọc gyro (notch + LPF), ước lượng tư thế Mahony, PID tốc độ góc kiểu Betaflight, tự cân bằng (ANGLE), giữ độ cao bằng ToF + bộ lọc Kalman (ALT HOLD), bù lực đẩy theo điện áp pin, tuyến tính hoá lực đẩy.
 - **An toàn:** chặn ARM khi chưa đủ điều kiện, failsafe tự hạ cánh, phát hiện va chạm, watchdog, giám sát vòng điều khiển bị treo, bản ghi HardFault, bảo vệ tràn stack bằng MPU.
 - **Còi + LED** báo trạng thái, pin yếu, failsafe, tìm quad sau va chạm.
-- **Bootloader** riêng (16 KB) nạp firmware qua USB-C (board v2) hoặc UART (v1), phát hiện ứng dụng crash liên tục, + **trang cấu hình web** (Web Serial, deploy lên GitLab Pages): bảng điều khiển, tinh chỉnh PID với biểu đồ trực tiếp, phổ rung gyro, tham số, hiệu chuẩn, test motor, nạp firmware (tự kết nối lại khi cổng USB khởi động lại), nhật ký firmware.
+- **Bootloader** riêng (16 KB) nạp firmware qua USB-C (board v2) hoặc UART (v1), phát hiện ứng dụng crash liên tục, + **trang cấu hình web** (Web Serial, deploy lên GitHub Pages): bảng điều khiển, tinh chỉnh PID với biểu đồ trực tiếp, phổ rung gyro, tham số, hiệu chuẩn, test motor, nạp firmware (tự kết nối lại khi cổng USB khởi động lại), nhật ký firmware.
 - **Chế độ mô phỏng trên web:** chính firmware này biên dịch sang WebAssembly chạy trên một quad ảo, bay được bằng bàn phím hay tay cầm game.
 
 ## Cấu trúc repo
@@ -74,13 +76,13 @@ Hoặc trực tiếp bằng preset CMake: `cmake --preset release && cmake --bui
    Không có ST-LINK: thử ROM bootloader USB DFU (nối JP1 = BOOT0, reset, `tools\flash.ps1 -Via dfu`).
    **Board v1:** ST-LINK vào J2 (SWDIO chân 2, SWCLK chân 3, NRST chân 4, GND chân 7) và `tools\flash.ps1 -Board 1`,
    hoặc hàn tắt JP1 (BOOT0), cắm USB-UART vào J2 và dùng mục khôi phục ROM trên trang web.
-2. **Các lần sau:** cắm USB-C, trang web, trang *Firmware*, chọn `miniquad-app.bin` (hoặc bản build mới nhất trên GitLab Pages), bấm *Nạp firmware*. Board tự vào bootloader, cổng USB biến mất rồi xuất hiện lại, trang tự kết nối lại. Cấu hình được giữ.
+2. **Các lần sau:** cắm USB-C, trang web, trang *Firmware*, chọn `miniquad-app.bin` (hoặc bản build mới nhất trên GitHub Pages), bấm *Nạp firmware*. Board tự vào bootloader, cổng USB biến mất rồi xuất hiện lại, trang tự kết nối lại. Cấu hình được giữ.
 
 Chi tiết: [docs/bootloader.md](docs/bootloader.md).
 
 ## Trang cấu hình
 
-- Bản deploy: GitLab Pages của repo (job `pages`, nhánh mặc định). Web Serial chỉ chạy trên Chrome / Edge / Opera máy tính, qua HTTPS hoặc `localhost`.
+- Bản deploy: <https://thanhbinh89.github.io/miniquad-f405/> (GitHub Pages, job `pages` của workflow CI, nhánh `main`). Web Serial chỉ chạy trên Chrome / Edge / Opera máy tính, qua HTTPS hoặc `localhost`.
 - Chạy tại máy: `cd web && python -m http.server 8080` rồi mở `http://localhost:8080`.
 - Board v2: cắm cáp USB-C, bấm *Kết nối*, chọn **MiniQuad-F405** (Windows 10/11, Linux, macOS không cần driver; VID:PID 0483:5740).
 - Board v1: nối mạch USB-UART 3,3 V vào J2: chân 5 (TX) → RX, chân 6 (RX) → TX, chân 7 → GND; 460800 baud.
@@ -99,7 +101,7 @@ cd web && npm test
 - Test web (Node): COBS/CRC so với vector của C, đồng bộ `proto.js` ↔ `proto.h`, toàn bộ ngăn giao thức của trang web chạy với emulator native của board v2 (tham số qua power cycle, telemetry, bay bằng tay điều khiển ảo, nạp firmware thật qua bootloader USB với hai lần re-enumeration, rút/cắm cáp USB, crash loop, ROM DFU) và board v1 (nạp qua UART, khôi phục AN3155), bản WebAssembly.
 - `web/test/e2e/screens.mjs`: kiểm thử trên trình duyệt thật bằng Playwright (tuỳ chọn).
 
-CI GitLab (`.gitlab-ci.yml`) chạy tất cả rồi deploy trang web kèm firmware vừa build lên GitLab Pages.
+GitHub Actions (`.github/workflows/ci.yml`) chạy tất cả ở mỗi lần push; firmware vừa build tải được ở mục *Artifacts* của từng lần chạy. Trên nhánh `main`, CI deploy trang web kèm firmware đó lên GitHub Pages.
 
 ## Tài liệu
 
