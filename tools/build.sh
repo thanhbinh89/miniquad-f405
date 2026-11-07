@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build everything on Linux / macOS / WSL.
 #
-#   tools/build.sh            firmware (release) + host tests
+#   tools/build.sh            firmware (release, board v2 / USB-C) + host tests
 #   tools/build.sh debug      firmware with -Og
-#   tools/build.sh all        + debug firmware + WebAssembly emulator + web tests
+#   tools/build.sh v1         firmware for the first board (UART J2)
+#   tools/build.sh all        v2 release + debug + v1 + WebAssembly emulator + web tests
 #
 # Needs: cmake >= 3.21, make, python3, arm-none-eabi-gcc (+ newlib),
 #        gcc for the host tests; clang + wasi-libc and node >= 18 for "all".
@@ -19,8 +20,9 @@ fw() {
 
 case "$what" in
   release|debug) fw "$what" ;;
-  all) fw release; fw debug ;;
-  *) echo "usage: $0 [release|debug|all]"; exit 2 ;;
+  v1) fw release-v1 ;;
+  all) fw release; fw debug; fw release-v1 ;;
+  *) echo "usage: $0 [release|debug|v1|all]"; exit 2 ;;
 esac
 
 cmake --preset host-tests >/dev/null
@@ -32,4 +34,4 @@ if [ "$what" = all ]; then
   cmake --build --preset wasm-emu -j"$jobs"
   (cd web && npm test)
 fi
-echo "images: build/release/out"
+echo "images: build/release/out (v2), build/release-v1/out (v1)"

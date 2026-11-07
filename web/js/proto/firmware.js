@@ -9,7 +9,7 @@
  */
 import { crc32 } from './crc.js';
 import { parseIntelHex } from './ihex.js';
-import { C, versionString } from './proto.js';
+import { BOARDS, C, versionString } from './proto.js';
 import { sleep } from '../util/emitter.js';
 
 export const MEM = {
@@ -21,7 +21,6 @@ export const MEM = {
   APP_BASE: 0x0800C000,
   APP_HEADER_SIZE: 0x200,
   APP_MAX_SIZE: 0xF4000,
-  BOARD_ID: 0x01,
 };
 
 export const APP_MAGIC = 0x5041514D;           // "MQAP"
@@ -80,7 +79,8 @@ export function parseAppImage(bytes) {
   if (h.imageSize < 8 || total > bytes.length) res.errors.push('Kích thước image sai / file bị cắt');
   else if (crc32(bytes.subarray(h.imageOffset, total)) !== h.imageCrc) res.errors.push('CRC image sai');
   if (total > MEM.APP_MAX_SIZE) res.errors.push('Image lớn hơn vùng flash ứng dụng');
-  if (h.boardId !== MEM.BOARD_ID) res.errors.push(`Image cho board khác (id ${h.boardId})`);
+  if (!BOARDS[h.boardId]) res.errors.push(`Image cho board lạ (id ${h.boardId})`);
+  h.board = BOARDS[h.boardId] || null;
   res.total = total;
   res.ok = res.errors.length === 0;
   if (res.ok) res.bytes = bytes.subarray(0, total);
@@ -112,6 +112,9 @@ export function loadFirmwareFile(name, buffer) {
   return out;
 }
 
+/** Where CI publishes the latest build for each board revision. */
+export const manifestUrl = (boardRev) => (boardRev === 1 ? 'firmware/v1/' : 'firmware/');
+
 /** The latest CI build published next to the page (firmware/manifest.json). */
 export async function fetchManifest(baseUrl = 'firmware/') {
   const res = await fetch(baseUrl + 'manifest.json', { cache: 'no-cache' });
@@ -136,8 +139,13 @@ export async function fetchManifestFile(manifest, which) {
 /* update through our bootloader                                            */
 /* ------------------------------------------------------------------------ */
 
-/** Wait until HELLO reports @p mode (after a reboot). */
-export async function waitForMode(device, mode, timeoutMs = 4000) {
+/**
+ * Wait until HELLO reports @p mode (after a reboot). Board v2 needs a
+ * moment: the USB port disappears with the reset and the host enumerates
+ * it again (about 1 s, longer the very first time on Windows).
+ */
+export const REBOOT_TIMEOUT_MS = 12000;
+export async function waitForMode(device, mode, timeoutMs = REBOOT_TIMEOUT_MS) {
   const t0 = Date.now();
   let last = null;
   while (Date.now() - t0 < timeoutMs) {
@@ -164,11 +172,16 @@ export async function updateFirmware(device, image, { log = () => {}, progress =
   const check = () => { if (signal?.aborted) throw new Error('Đã huỷ'); };
 
   let h = await device.hello();
-  if (h.boardId !== image.header.boardId) throw new Error('Image không dành cho board này');
+  if (h.boardId !== image.header.boardId) {
+    const want = BOARDS[image.header.boardId]?.name || `id ${image.header.boardId}`;
+    const have = BOARDS[h.boardId]?.name || `id ${h.boardId}`;
+    throw new Error(`Image dành cho ${want}, board đang nối là ${have}`);
+  }
   if (h.mode === C.DEV_MODE_APP) {
     log('Khởi động lại vào bootloader…');
     await device.reboot(C.REBOOT_BOOTLOADER);
     await sleep(150);
+    if (device.reconnecting) log('Board khởi động lại, chờ cổng USB của bootloader…');
     h = await waitForMode(device, C.DEV_MODE_BOOTLOADER);
   }
   log(`Bootloader v${versionString(h.fwVersion)} – ứng dụng hiện tại: ${h.appValid ? 'v' + versionString(h.appVersion) : 'không hợp lệ'}`);
@@ -202,7 +215,7 @@ export async function updateFirmware(device, image, { log = () => {}, progress =
 
   await device.blBoot();
   await sleep(100);
-  const app = await waitForMode(device, C.DEV_MODE_APP, 5000);
+  const app = await waitForMode(device, C.DEV_MODE_APP);
   log(`Ứng dụng đang chạy: v${versionString(app.fwVersion)} (${app.gitHash})`, 'ok');
   return app;
 }

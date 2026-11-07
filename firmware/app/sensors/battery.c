@@ -12,6 +12,8 @@
 
 #define PRESENT_ON_V    2.6f
 #define PRESENT_OFF_V   2.3f
+#define USB_PRESENT_ON_V    3.45f   /* above anything the 3.3 V rail can back-feed */
+#define USB_PRESENT_OFF_V   3.35f
 #define SLOW_LPF_HZ     0.2f
 #define DEBOUNCE_S      2.0f
 #define RECOVER_S       5.0f
@@ -22,6 +24,11 @@ void battery_init(battery_t *b)
     memset(b, 0, sizeof(*b));
     b->state = BAT_NONE;
     b->vdda = 3.3f;
+}
+
+void battery_set_usb_power(battery_t *b, bool usb_power)
+{
+    b->usb_power = usb_power;
 }
 
 void battery_update(battery_t *b, const battery_cal_t *cal, uint16_t raw_vbat, uint16_t raw_vref,
@@ -42,9 +49,11 @@ void battery_update(battery_t *b, const battery_cal_t *cal, uint16_t raw_vbat, u
     }
 
     bool was_present = b->present;
-    if (!b->present && b->v_raw > PRESENT_ON_V) {
+    float on_v = b->usb_power ? USB_PRESENT_ON_V : PRESENT_ON_V;
+    float off_v = b->usb_power ? USB_PRESENT_OFF_V : PRESENT_OFF_V;
+    if (!b->present && b->v_raw > on_v) {
         b->present = true;
-    } else if (b->present && b->v_raw < PRESENT_OFF_V) {
+    } else if (b->present && b->v_raw < off_v) {
         b->present = false;
     }
     if (!b->present) {

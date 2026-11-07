@@ -7,12 +7,24 @@
  * (U3 = STM32F405RGT6, LQFP64). LQFP64 pin numbers are given in comments so
  * the mapping can be checked against the schematic by eye.
  *
+ * Two board revisions share this file (CMake option MQ_BOARD_REV):
+ *
+ *   rev 1  J2 = 7-pin SWD + UART connector; the configurator talks to USART1
+ *          through an external 3.3 V USB-UART adapter.
+ *   rev 2  J2 = USB-C (USB 2.0 full speed device on the MCU's OTG_FS core):
+ *          console, configuration and firmware update over USB CDC.
+ *          SWD moved to test pads TP1..TP5 (first flash of the bootloader).
+ *          VBUS also feeds a second 3.3 V LDO (U7), so the board runs from
+ *          USB alone; the motors stay on VBAT.
+ *
  * Resource map (keep it conflict free - every DMA stream is used once):
  *
  *   Function        Peripheral  Pins                          DMA
  *   --------------  ----------  ----------------------------  ------------------
  *   IMU             SPI1        PA5/PA6/PA7, CS PA4, INT PA3  RX DMA2 S0 C3, TX DMA2 S3 C3
- *   Link (PC/web)   USART1      PA9 TX / PA10 RX  (J2)        RX DMA2 S2 C4, TX DMA2 S7 C4
+ *   Link rev 1      USART1      PA9 TX / PA10 RX  (J2)        RX DMA2 S2 C4, TX DMA2 S7 C4
+ *   Link rev 2      OTG_FS      PA11 D- / PA12 D+ (USB-C J2), - (core FIFOs, IRQ)
+ *                               VBUS/2 sense PA9
  *   ToF             I2C2        PB10/PB11, XSHUT PB12,        RX DMA1 S2 C7, TX DMA1 S7 C7
  *                               GPIO1 PB13
  *   Battery/temp    ADC1        PC2 (IN12), VREFINT, TEMP     DMA2 S4 C0 (circular)
@@ -30,9 +42,25 @@
 
 #include "stm32f4xx.h"
 
+#ifndef MQ_BOARD_REV
+#define MQ_BOARD_REV            2
+#endif
+
+#if MQ_BOARD_REV == 1
 #define BOARD_NAME              "MINIQUAD-F405"
-#define BOARD_ID                0x01u
-#define BOARD_HSE_HZ            8000000u    /* Y1 KDS DSX321G 8 MHz */
+#define BOARD_ID                0x01u       /* images refuse to run on another id */
+#define BOARD_LINK_UART         1
+#define BOARD_LINK_USB          0
+#elif MQ_BOARD_REV == 2
+#define BOARD_NAME              "MINIQUAD-F405V2"   /* <= 15 characters */
+#define BOARD_ID                0x02u
+#define BOARD_LINK_UART         0
+#define BOARD_LINK_USB          1
+#else
+#error "MQ_BOARD_REV must be 1 (UART J2) or 2 (USB-C)"
+#endif
+
+#define BOARD_HSE_HZ            8000000u    /* Y1 KDS DSX321G 8 MHz (USB needs the crystal) */
 
 /* ------------------------------------------------------------------------ */
 /* Clocks (fixed by clock_init(): SYSCLK 168 MHz, APB1 42 MHz, APB2 84 MHz)  */
@@ -52,9 +80,11 @@
 #define LED_ACTIVE_LOW          1
 
 /* ------------------------------------------------------------------------ */
-/* Link UART: USART1 on J2 (debug connector, also STM32 ROM bootloader)     */
-/*   J2: 1 +3V3, 2 SWDIO, 3 SWCLK, 4 NRST, 5 UART1_TX, 6 UART1_RX, 7 GND     */
+/* Link to the configurator                                                 */
 /* ------------------------------------------------------------------------ */
+#if BOARD_LINK_UART
+/* rev 1: USART1 on J2 (debug connector, also the STM32 ROM bootloader)
+ *   J2: 1 +3V3, 2 SWDIO, 3 SWCLK, 4 NRST, 5 UART1_TX, 6 UART1_RX, 7 GND     */
 #define LINK_USART              USART1
 #define LINK_USART_IRQn         USART1_IRQn
 #define LINK_TX_PORT            GPIOA
@@ -70,6 +100,36 @@
 #define LINK_DMA_TX_INDEX       7u
 #define LINK_DMA_TX_IRQn        DMA2_Stream7_IRQn
 #define LINK_DMA_CHANNEL        4u
+#endif
+
+#if BOARD_LINK_USB
+/* rev 2: USB-C J2 (TYPE-C-31-M-12). CC1/CC2 5.1k to GND (R37/R38, device),
+ * D-/D+ through the ESD array U6 (USBLC6-2SC6). VBUS -> R39 10k / R40 10k
+ * -> PA9: 2.5 V when a host is plugged in. The OTG core's own VBUS
+ * comparator is not used (it needs 5 V on PA9): GCCFG.NOVBUSSENS = 1 and PA9
+ * is read as a GPIO; the D+ pull-up is switched with DCTL.SDIS so a
+ * self-powered board never drives D+ into an unpowered host.
+ * PA10 (OTG_FS_ID, ex UART1_RX) is not connected: analog mode. */
+#define USB_DM_PORT             GPIOA
+#define USB_DM_PIN              11u         /* pin 44, OTG_FS_DM */
+#define USB_DP_PORT             GPIOA
+#define USB_DP_PIN              12u         /* pin 45, OTG_FS_DP */
+#define USB_GPIO_AF             10u
+#define USB_VBUS_PORT           GPIOA
+#define USB_VBUS_PIN            9u          /* pin 42, USB_VBUS_DET (VBUS / 2) */
+#define USB_NC_PORT             GPIOA
+#define USB_NC_PIN              10u         /* pin 43, not connected */
+#define USB_IRQn                OTG_FS_IRQn
+/* ST's "Virtual COM Port" ids (as used by most STM32 flight controllers):
+ * Windows 10+, Linux and macOS bind their built-in CDC ACM driver. A product
+ * sold to third parties needs its own VID/PID (e.g. pid.codes). */
+#define USB_VID                 0x0483u
+#define USB_PID                 0x5740u
+#define USB_BCD_DEVICE          0x0200u     /* board revision 2.00 */
+#define USB_MANUFACTURER        "MiniQuad"
+#define USB_PRODUCT_APP         "MiniQuad-F405"
+#define USB_PRODUCT_BL          "MiniQuad-F405 Bootloader"
+#endif
 
 /* ------------------------------------------------------------------------ */
 /* IMU: ICM-42688-P (U4) on SPI1, 33R series resistors R10..R13             */
@@ -186,7 +246,7 @@
 #define IRQ_PRIO_IMU            2u   /* EXTI3 data ready + SPI1 RX DMA complete     */
 #define IRQ_PRIO_SYSTICK        3u   /* 1 kHz tick + flight-loop stall supervisor   */
 #define IRQ_PRIO_I2C            5u   /* I2C2 event/error + its DMA streams          */
-#define IRQ_PRIO_LINK           6u   /* USART1 TX DMA                               */
+#define IRQ_PRIO_LINK           6u   /* USART1 TX DMA (rev 1) / OTG_FS (rev 2)      */
 #define IRQ_PRIO_FLIGHT         8u   /* software interrupt running the flight loop  */
 
 /* The flight loop runs inside this IRQ, pended by software after every IMU

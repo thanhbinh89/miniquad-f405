@@ -12,13 +12,15 @@ execute_process(COMMAND "${CMAKE_COMMAND}"
   -DVERSION_PATCH=${PROJECT_VERSION_PATCH}
   -P "${PROJECT_SOURCE_DIR}/cmake/gen_version.cmake")
 
-# Hardware independent firmware modules, compiled for the host.
-add_library(fw_pure STATIC
+# Hardware independent firmware modules, compiled for the host. Built once per
+# board revision: board.h (BOARD_ID, link) changes bl_image.c, bl_core.c ...
+set(FW_PURE_SOURCES
   ${FW}/common/util/crc.c
   ${FW}/common/util/cobs.c
   ${FW}/common/util/link.c
   ${FW}/bootloader/bl_image.c
   ${FW}/bootloader/bl_core.c
+  ${FW}/bootloader/bl_policy.c
   ${FW}/app/lib/filters.c
   ${FW}/app/estimation/attitude.c
   ${FW}/app/estimation/altitude.c
@@ -43,32 +45,40 @@ add_library(fw_pure STATIC
 # comms.c / telemetry.c need the svc_* functions (app_services.h): they are
 # provided by each executable that uses them (test_comms, the emulators).
 
-target_include_directories(fw_pure PUBLIC
-  "${CMAKE_CURRENT_SOURCE_DIR}/host_include"
-  "${FW}/common" "${FW}/common/util"
-  "${FW}/bootloader"
-  "${FW}/app/lib" "${FW}/app/estimation" "${FW}/app/control" "${FW}/app/flight"
-  "${FW}/app/config" "${FW}/app/comms" "${FW}/app/sensors" "${FW}/app/ui"
-  "${FW}/app/system"
-  "${HOST_GEN_DIR}")
-target_compile_definitions(fw_pure PUBLIC HOST_BUILD=1)
-target_compile_options(fw_pure PUBLIC -Wall -Wextra -Wshadow -Wno-unused-parameter -fno-strict-aliasing)
-target_compile_options(fw_pure PRIVATE -Wdouble-promotion -Werror)
-target_link_libraries(fw_pure PUBLIC m)
+function(add_fw_pure name rev)
+  add_library(${name} STATIC ${FW_PURE_SOURCES})
+  target_include_directories(${name} PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_include"
+    "${FW}/common" "${FW}/common/util"
+    "${FW}/bootloader"
+    "${FW}/app/lib" "${FW}/app/estimation" "${FW}/app/control" "${FW}/app/flight"
+    "${FW}/app/config" "${FW}/app/comms" "${FW}/app/sensors" "${FW}/app/ui"
+    "${FW}/app/system"
+    "${HOST_GEN_DIR}")
+  target_compile_definitions(${name} PUBLIC HOST_BUILD=1 MQ_BOARD_REV=${rev})
+  target_compile_options(${name} PUBLIC -Wall -Wextra -Wshadow -Wno-unused-parameter -fno-strict-aliasing)
+  target_compile_options(${name} PRIVATE -Wdouble-promotion -Werror)
+  target_link_libraries(${name} PUBLIC m)
+endfunction()
 
 # Device emulator core (bootloader, ROM loader, application on the simulated
 # quad); svc_* for comms.c come from emu_device.c.
-add_library(emu_core OBJECT
-  emu/emu_device.c
-  emu/emu_rom.c
-  sim/sim_harness.c
-  sim/quad_model.c
-  ${FW}/app/ui/notify.c)
-target_include_directories(emu_core PUBLIC
-  "${CMAKE_CURRENT_SOURCE_DIR}/emu" "${CMAKE_CURRENT_SOURCE_DIR}/sim" "${CMAKE_CURRENT_SOURCE_DIR}/unit"
-  "${FW}/app/drivers" "${FW}/app/ui")
-target_link_libraries(emu_core PUBLIC fw_pure)
-target_compile_options(emu_core PRIVATE -Wno-double-promotion)
+function(add_emu_core name pure)
+  add_library(${name} OBJECT
+    emu/emu_device.c
+    emu/emu_rom.c
+    sim/sim_harness.c
+    sim/quad_model.c
+    ${FW}/app/ui/notify.c)
+  target_include_directories(${name} PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/emu" "${CMAKE_CURRENT_SOURCE_DIR}/sim" "${CMAKE_CURRENT_SOURCE_DIR}/unit"
+    "${FW}/app/drivers" "${FW}/app/ui")
+  target_link_libraries(${name} PUBLIC ${pure})
+  target_compile_options(${name} PRIVATE -Wno-double-promotion)
+endfunction()
+
+add_fw_pure(fw_pure ${MQ_BOARD_REV})
+add_emu_core(emu_core fw_pure)
 
 if(MQ_WASM)
   # WebAssembly build of the emulator for the web configurator demo mode
@@ -98,6 +108,8 @@ host_test(test_rc         unit/test_rc.c)
 host_test(test_bootloader unit/test_bootloader.c)
 host_test(test_io         unit/test_io.c)
 host_test(test_comms      unit/test_comms.c)
+host_test(test_usb        unit/test_usb.c ${FW}/common/usb/usb_cdc.c)
+target_include_directories(test_usb PRIVATE "${FW}/common/usb")
 
 # closed-loop flight simulation (physics model in double precision)
 add_executable(test_sim_flight sim/test_sim_flight.c sim/sim_harness.c sim/quad_model.c)
@@ -113,3 +125,17 @@ add_test(NAME test_emu COMMAND test_emu)
 
 add_executable(miniquad-emu emu/emu_stdio.c)
 target_link_libraries(miniquad-emu PRIVATE emu_core)
+
+# the other board revision too: the configurator supports both
+if(MQ_BOARD_REV EQUAL 2)
+  set(MQ_OTHER_REV 1)
+else()
+  set(MQ_OTHER_REV 2)
+endif()
+add_fw_pure(fw_pure_v${MQ_OTHER_REV} ${MQ_OTHER_REV})
+add_emu_core(emu_core_v${MQ_OTHER_REV} fw_pure_v${MQ_OTHER_REV})
+add_executable(test_emu_v${MQ_OTHER_REV} emu/test_emu.c)
+target_link_libraries(test_emu_v${MQ_OTHER_REV} PRIVATE emu_core_v${MQ_OTHER_REV})
+add_test(NAME test_emu_v${MQ_OTHER_REV} COMMAND test_emu_v${MQ_OTHER_REV})
+add_executable(miniquad-emu-v${MQ_OTHER_REV} emu/emu_stdio.c)
+target_link_libraries(miniquad-emu-v${MQ_OTHER_REV} PRIVATE emu_core_v${MQ_OTHER_REV})

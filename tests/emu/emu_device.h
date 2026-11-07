@@ -2,14 +2,19 @@
  * @file    emu_device.h
  * @brief   MiniQuad-F405 device emulator: the real protocol, bootloader,
  *          parameter, flight-core and notification code running on a
- *          simulated board (flash, UART at 460800 baud, quad physics).
+ *          simulated board (flash, host link, quad physics).
  *
  * Modes follow the hardware exactly:
  *
  *   reset -> BOOT0 high            -> ROM bootloader (AN3155, emu_rom.c)
  *         -> sector 0 erased       -> dead (nothing answers)
- *         -> our bootloader (bl_core.c): stays on request / invalid app /
- *            a packet within 300 ms, otherwise starts the application
+ *         -> our bootloader (bl_core.c + bl_policy.c): stays on request /
+ *            invalid app / double reset / crash loop (rev 1 also when a
+ *            packet arrives within 300 ms), otherwise starts the application
+ *
+ * Built once per board revision (MQ_BOARD_REV): rev 1 = UART link that is
+ * always there, rev 2 = USB CDC port that vanishes on every MCU reset and
+ * re-appears when the firmware enumerates (emu_link_up / emu_link_epoch).
  *   application: comms.c + params + config_store (in emulated flash) +
  *                fc.c fed by tests/sim (IMU, PPM, ToF, battery)
  *
@@ -43,7 +48,16 @@ void       emu_power_cycle(void);
 void       emu_reset_pin(void);
 void       emu_set_boot0(bool high);
 
-/** Bytes from the host (wire). */
+/** The host has the serial port (rev 2: USB enumerated; rev 1: always). */
+bool       emu_link_up(void);
+/** Incremented every time the port disappears (USB re-enumeration). */
+uint32_t   emu_link_epoch(void);
+/** USB cable (VBUS) in or out (rev 2; default in). */
+void       emu_usb_cable(bool plugged);
+bool       emu_usb_cable_in(void);
+int        emu_board_rev(void);
+
+/** Bytes from the host (wire); dropped while the link is down. */
 void       emu_rx(const uint8_t *data, size_t len);
 /** Bytes towards the host; returns the count copied. */
 size_t     emu_tx(uint8_t *out, size_t max);

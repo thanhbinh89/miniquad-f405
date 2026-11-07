@@ -41,7 +41,16 @@ void svc_identity(msg_hello_rsp_t *h)
 }
 void svc_reboot(uint8_t target) { (void)target; }
 bool svc_save_config(void) { g_saves++; return g_save_ok; }
-void svc_motor_test(const uint16_t duty[4]) { memcpy(g_motor, duty, sizeof(g_motor)); g_motor_calls++; }
+bool g_motor_ok = true;
+bool svc_motor_test(const uint16_t duty[4])
+{
+    if (!g_motor_ok) {
+        return false;
+    }
+    memcpy(g_motor, duty, sizeof(g_motor));
+    g_motor_calls++;
+    return true;
+}
 void svc_motor_test_stop(void) { g_motor_stops++; }
 bool svc_calibrate(uint8_t what) { g_cal = what; return what >= CAL_GYRO && what <= CAL_ACCEL_RESET; }
 void svc_beep(uint8_t pattern) { g_beep = pattern; }
@@ -320,6 +329,13 @@ static void test_motor_test(void)
     CHECK(g_motor[0] == 1000u && g_motor[1] == 1000u && g_motor[2] == 100u);
     r = request(MSG_MOTOR_TEST, mt, 9);
     CHECK(r != NULL && r->payload[0] == ST_ERR_LENGTH);
+
+    /* no battery (USB power only): refused */
+    g_motor_ok = false;
+    r = request(MSG_MOTOR_TEST, mt, 10);
+    CHECK(r != NULL && r->payload[0] == ST_ERR_STATE);
+    CHECK(g_motor_calls == 1);
+    g_motor_ok = true;
 
     /* the host disappears: the motor test is stopped */
     g_now += COMMS_HOST_TIMEOUT_MS + 1u;

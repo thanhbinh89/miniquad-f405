@@ -1,6 +1,7 @@
 /**
  * @file    proto.h
- * @brief   MiniQuad link protocol (USART1 <-> web configurator).
+ * @brief   MiniQuad link protocol (board <-> web configurator), carried by
+ *          USB CDC on board rev 2 and by USART1 / J2 on rev 1.
  *
  * Wire format (see docs/protocol.md):
  *
@@ -70,7 +71,16 @@
 
 #define REBOOT_NORMAL           0u          /* plain reset -> app            */
 #define REBOOT_BOOTLOADER       1u          /* stay in our bootloader        */
-#define REBOOT_ROM              2u          /* STM32 system memory (AN3155)  */
+#define REBOOT_ROM              2u          /* STM32 system memory (AN3155 UART / USB DFU) */
+
+/* HELLO.boot_reason (bootloader mode): why the bootloader did not start the
+ * application. 0 in application mode. */
+#define BLR_NONE                0u          /* boot window, about to start the app */
+#define BLR_REQUEST             1u          /* the application asked (firmware update) */
+#define BLR_NO_APP              2u          /* no valid application image */
+#define BLR_DBL_RESET           3u          /* reset pressed twice within the boot window */
+#define BLR_CRASH_LOOP          4u          /* app restarted 3x without confirming its boot */
+#define BLR_HOST                5u          /* rev 1: the configurator caught the boot window */
 
 #define PROTO_PACKED            __attribute__((packed))
 
@@ -83,7 +93,8 @@ typedef struct PROTO_PACKED {
     uint32_t fw_version;        /* running image                             */
     uint32_t app_version;       /* version in the app header, 0 if invalid   */
     uint8_t  app_valid;         /* 1 if the application image verifies       */
-    uint8_t  reserved[3];
+    uint8_t  boot_reason;       /* bootloader: why it stays resident (BLR_*) */
+    uint8_t  reserved[2];
     uint32_t app_max_size;      /* bytes available for header + image       */
     uint32_t uid[3];
     uint32_t build_time;
@@ -272,6 +283,7 @@ typedef struct PROTO_PACKED {
 #define STF_MIXER_SAT           (1u << 13)
 #define STF_HOST_ALIVE          (1u << 14)
 #define STF_CRASHED             (1u << 15)  /* crash cut-off triggered    */
+#define STF_USB                 (1u << 16)  /* rev 2: VBUS on the USB-C port */
 
 /* arming blockers (arm_block bitmask) */
 #define ARMB_NO_RX              (1u << 0)
@@ -287,6 +299,7 @@ typedef struct PROTO_PACKED {
 #define ARMB_LOOP               (1u << 10)  /* flight loop not running    */
 #define ARMB_CRASH              (1u << 11)  /* crash detected, cycle arm  */
 #define ARMB_CONFIG             (1u << 12)  /* config being saved         */
+#define ARMB_NO_BAT             (1u << 13)  /* no battery (e.g. USB power only) */
 
 /* flight modes */
 #define FMODE_ACRO              0u

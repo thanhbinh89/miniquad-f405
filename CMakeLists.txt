@@ -18,6 +18,16 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Board revision (firmware/common/board.h):
+#   1 = configurator on USART1 / J2 through a USB-UART adapter
+#   2 = USB-C (USB CDC console, configuration and bootloader), SWD on test pads
+set(MQ_BOARD_REV 2 CACHE STRING "MiniQuad-F405 board revision (1 = UART J2, 2 = USB-C)")
+set_property(CACHE MQ_BOARD_REV PROPERTY STRINGS 1 2)
+if(NOT MQ_BOARD_REV MATCHES "^[12]$")
+  message(FATAL_ERROR "MQ_BOARD_REV must be 1 or 2 (got '${MQ_BOARD_REV}')")
+endif()
+message(STATUS "MiniQuad-F405 board revision: ${MQ_BOARD_REV}")
+
 if(MQ_WASM)
   set(CMAKE_C_FLAGS_RELEASE "-O2")
   add_subdirectory(tests)

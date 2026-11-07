@@ -1,14 +1,21 @@
 /**
- * Firmware: what is running, update through our bootloader, recovery
- * through the STM32 ROM bootloader, last fault record.
+ * Firmware: what is running, update through our bootloader, recovery and
+ * first flashing, last fault record.
+ *
+ *   board v2 (USB-C): update through the bootloader over USB CDC; first
+ *     flash / recovery of the bootloader with an ST-Link on the SWD test
+ *     pads TP1..TP5, or the STM32 ROM bootloader in USB DFU mode (desktop
+ *     tool: STM32CubeProgrammer / dfu-util).
+ *   board v1 (UART J2): update through the bootloader over UART; recovery
+ *     with the ROM bootloader over UART (AN3155) right from this page.
  */
 import {
-  MEM, fetchManifest, fetchManifestFile, loadFirmwareFile, parseAppImage, updateFirmware, waitForMode,
+  MEM, fetchManifest, fetchManifestFile, loadFirmwareFile, manifestUrl, parseAppImage, updateFirmware, waitForMode,
 } from '../proto/firmware.js';
-import { C, FAULT_TYPES, versionString } from '../proto/proto.js';
+import { BOARDS, C, FAULT_TYPES, versionString } from '../proto/proto.js';
 import { ROM_BAUD, Stm32Rom, romFlash } from '../proto/stm32rom.js';
 import { sleep } from '../util/emitter.js';
-import { boardSVG } from './board.js';
+import { SWD_PADS, boardSVG } from './board.js';
 import { fmtDuration, h, hex32, panel } from './dom.js';
 
 const CFSR_BITS = [
@@ -37,6 +44,8 @@ export class FirmwareView {
 
   mount(root) {
     const app = this.app;
+    const rev = app.boardRev;
+    this.rev = rev;
     this.infoKv = h('dl', { class: 'kv' });
     this.imageInfo = h('div');
     this.progress = h('div', { class: 'progress' }, h('div'));
@@ -66,9 +75,12 @@ export class FirmwareView {
 
     this.faultBox = h('div', h('p', { class: 'note' }, 'Kết nối ứng dụng để đọc.'));
 
+    this.downloads = h('div', { class: 'btn-row', style: { margin: '10px 0' } });
     root.append(
       h('div', { class: 'view-head' }, h('h1', 'Firmware'),
-        h('p', 'Nạp firmware mới qua bootloader của MiniQuad, hoặc khôi phục bằng bootloader ROM của STM32 khi board không còn phản hồi.')),
+        h('p', rev === 1
+          ? 'Nạp firmware mới qua bootloader của MiniQuad, hoặc khôi phục bằng bootloader ROM của STM32 khi board không còn phản hồi.'
+          : 'Nạp firmware mới qua USB-C (bootloader của MiniQuad). Lần nạp bootloader đầu tiên, hoặc khi bootloader hỏng: dùng SWD trên 5 pad test.')),
       h('div', { class: 'grid cols-2' },
         panel('U3', 'đang chạy', this.infoKv,
           h('div', { class: 'btn-row', style: { marginTop: '12px' } },
@@ -76,27 +88,12 @@ export class FirmwareView {
             h('button', { class: 'btn small', onclick: () => this.reboot(C.REBOOT_NORMAL) }, 'Khởi động lại'),
             h('button', { class: 'btn small', onclick: () => this.reboot(C.REBOOT_BOOTLOADER) }, 'Vào bootloader'))),
         panel('Fault', 'lỗi gần nhất & lý do reset', this.faultBox)),
-      h('div', { style: { marginTop: '28px' } }, panel('Cập nhật', 'qua bootloader UART (J2)',
+      h('div', { style: { marginTop: '28px' } }, panel('Cập nhật', rev === 1 ? 'qua bootloader UART (J2)' : 'qua bootloader, cổng USB-C',
         h('div', { class: 'grid cols-2', style: { alignItems: 'start' } },
           h('div', h('h3', { style: { fontSize: 'var(--fs-m)', marginBottom: '8px' } }, 'Bản build mới nhất'), this.manifestBox,
             h('h3', { style: { fontSize: 'var(--fs-m)', margin: '16px 0 8px' } }, 'Hoặc file trên máy'), drop),
           h('div', this.imageInfo, h('div', { class: 'btn-row', style: { margin: '14px 0 10px' } }, this.flashBtn), this.progress, this.log)))),
-      h('div', { style: { marginTop: '28px' } }, panel('JP1', 'khôi phục bằng ROM bootloader STM32',
-        h('div', { class: 'grid cols-2', style: { alignItems: 'start' } },
-          h('div',
-            h('p', { class: 'note' }, 'Dùng khi bootloader của MiniQuad bị hỏng, khi nạp lần đầu, hoặc khi board không trả lời. Ghi cả bootloader (0x08000000) và ứng dụng (0x0800C000) qua J2 ở 115200 baud, 8E1.'),
-            h('ol', { class: 'note' },
-              h('li', 'Nếu board còn trả lời: bấm “Vào ROM bootloader”.'),
-              h('li', 'Nếu không: hàn tắt cầu JP1 (BOOT0, mặt dưới, dưới MCU) rồi bấm reset S2 hoặc cắm lại pin. Nạp xong nhớ bỏ cầu JP1.')),
-            h('div', { class: 'btn-row', style: { margin: '10px 0' } },
-              h('button', { class: 'btn', onclick: () => this.enterRom() }, 'Vào ROM bootloader'),
-              h('button', { class: 'btn', onclick: () => this.pickRecovery() }, 'Chọn file…'),
-              h('button', { class: 'btn', onclick: () => this.recoveryFromServer() }, 'Dùng bản build mới nhất')),
-            this.recInfo,
-            h('label', { class: 'check', style: { marginTop: '10px' } }, this.recErase, 'Xoá luôn cấu hình (sector 1–2)'),
-            h('label', { class: 'check', style: { marginTop: '6px' } }, this.recVerify, 'Đọc lại để kiểm tra sau khi ghi')),
-          h('div', h('div', { class: 'btn-row', style: { marginBottom: '10px' } }, this.recBtn), this.recProgress, this.recLog,
-            h('div', { style: { maxWidth: '300px', marginTop: '12px' } }, boardSVG({ focus: 'uart', scale: 0.7 })))))),
+      ...(rev === 1 ? [this.romPanelV1()] : this.recoveryPanelsV2()),
     );
     for (const [list, key] of [[this.log, 'fw'], [this.recLog, 'rec']]) {
       for (const [t, k] of this.lines[key]) list.append(h('li', { class: k }, t));
@@ -110,6 +107,71 @@ export class FirmwareView {
   }
 
   unmount() {}
+
+  /* board v1: ROM bootloader over UART, flashed from this page */
+  romPanelV1() {
+    return h('div', { style: { marginTop: '28px' } }, panel('JP1', 'khôi phục bằng ROM bootloader STM32',
+      h('div', { class: 'grid cols-2', style: { alignItems: 'start' } },
+        h('div',
+          h('p', { class: 'note' }, 'Dùng khi bootloader của MiniQuad bị hỏng, khi nạp lần đầu, hoặc khi board không trả lời. Ghi cả bootloader (0x08000000) và ứng dụng (0x0800C000) qua J2 ở 115200 baud, 8E1.'),
+          h('ol', { class: 'note' },
+            h('li', 'Nếu board còn trả lời: bấm “Vào ROM bootloader”.'),
+            h('li', 'Nếu không: hàn tắt cầu JP1 (BOOT0, mặt dưới, dưới MCU) rồi bấm reset S2 hoặc cắm lại pin. Nạp xong nhớ bỏ cầu JP1.')),
+          h('div', { class: 'btn-row', style: { margin: '10px 0' } },
+            h('button', { class: 'btn', onclick: () => this.enterRom() }, 'Vào ROM bootloader'),
+            h('button', { class: 'btn', onclick: () => this.pickRecovery() }, 'Chọn file…'),
+            h('button', { class: 'btn', onclick: () => this.recoveryFromServer() }, 'Dùng bản build mới nhất')),
+          this.recInfo,
+          h('label', { class: 'check', style: { marginTop: '10px' } }, this.recErase, 'Xoá luôn cấu hình (sector 1–2)'),
+          h('label', { class: 'check', style: { marginTop: '6px' } }, this.recVerify, 'Đọc lại để kiểm tra sau khi ghi')),
+        h('div', h('div', { class: 'btn-row', style: { marginBottom: '10px' } }, this.recBtn), this.recProgress, this.recLog,
+          h('div', { style: { maxWidth: '300px', marginTop: '12px' } }, boardSVG({ rev: 1, focus: 'uart', scale: 0.7 }))))));
+  }
+
+  /* board v2: SWD pads (first flash) and ROM USB DFU, both with desktop tools */
+  recoveryPanelsV2() {
+    const code = (t) => h('code', t);
+    return [
+      h('div', { style: { marginTop: '28px' } }, panel('SWD', 'nạp bootloader lần đầu / khôi phục bằng ST-Link',
+        h('div', { class: 'grid cols-2', style: { alignItems: 'start' } },
+          h('div',
+            h('p', { class: 'note' }, 'Board mới hàn xong chưa có bootloader nên chưa có cổng USB. Nạp một lần miniquad-full.hex (bootloader + ứng dụng, giữ nguyên cấu hình) qua 5 pad SWD ở mặt dưới; từ đó mọi lần cập nhật đều qua USB-C ở phần trên.'),
+            h('ol', { class: 'note' },
+              h('li', 'Cấp nguồn cho board: cáp USB-C (đủ cho MCU) hoặc pin 1S.'),
+              h('li', 'Nối ST-Link (V2/V3; kim test, pogo pin hoặc hàn dây tạm):',
+                h('dl', { class: 'kv', style: { maxWidth: '300px', margin: '6px 0' } },
+                  ...SWD_PADS.flatMap(([n, net, st, silk]) => [h('dt', `${n} “${silk}” (${net})`), h('dd', { class: 'text' }, st)]))),
+              h('li', 'Windows + STM32CubeCLT: ', code('powershell -ExecutionPolicy Bypass -File tools\\flash.ps1 -Via swd'),
+                '. Hoặc STM32CubeProgrammer → ST-LINK, mode “Under reset” → Connect → mở miniquad-full.hex → Download.'),
+              h('li', 'Tháo ST-Link, cắm USB-C và bấm “Kết nối”. LED nháy nhanh = bootloader đang chờ (chưa có ứng dụng).')),
+            this.downloads),
+          h('div', { style: { maxWidth: '360px' } }, boardSVG({ rev: 2, focus: 'swd', scale: 0.75 }),
+            h('p', { class: 'note' }, 'Vị trí theo layout final 07/11/2026, nhìn từ mặt trên; pad nằm ở mặt dưới, dưới vùng MCU, cạnh J2. Lật board thì thứ tự ngược lại (GND … RST); tên in dưới mỗi pad.'))))),
+      h('div', { style: { marginTop: '28px' } }, panel('DFU', 'ROM bootloader STM32 qua USB (dự phòng)',
+        h('div',
+          h('p', { class: 'note' }, 'Không có ST-Link: bootloader ROM trong STM32F405 có chế độ USB DFU trên chính cổng USB-C. Trang web không nạp được DFU; dùng công cụ trên máy tính.'),
+          h('ol', { class: 'note' },
+            h('li', 'Rút bộ thu khỏi J3. Board còn trả lời: bấm “Vào ROM bootloader (DFU)”. Không trả lời: nối JP1 (0 Ω, BOOT0 lên 3,3 V, mặt dưới) rồi bấm reset S2.'),
+            h('li', 'STM32CubeProgrammer → USB → Refresh → Connect, nạp miniquad-full.hex; hoặc ', code('STM32_Programmer_CLI -c port=USB1 -w miniquad-full.hex -v -rst'),
+              ', hoặc ', code('tools\\flash.ps1 -Via dfu'), '.'),
+            h('li', 'Gỡ JP1 (nếu đã nối) rồi reset để chạy lại bootloader MiniQuad.')),
+          h('p', { class: 'note warn' }, 'Chưa kiểm chứng trên board v2. ROM cần thạch anh 8 MHz chạy tốt, và nó dò cả cổng UART: PA10 để trống, J3.4 (PC11) không có điện trở kéo, nhiễu hoặc xung PPM có thể làm ROM chọn nhầm UART. Vào bằng nút bên dưới thì bootloader MiniQuad bật điện trở kéo lên trong chip cho hai chân này trước; vào bằng JP1 thì không. Không thấy “STM32 BOOTLOADER”: reset vào lại, hoặc dùng SWD.'),
+          h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+            h('button', { class: 'btn', onclick: () => this.enterRom() }, 'Vào ROM bootloader (DFU)'))))),
+    ];
+  }
+
+  renderDownloads() {
+    const m = this.manifest;
+    if (!this.downloads) return;
+    if (!m) {
+      this.downloads.replaceChildren(h('span', { class: 'note' }, 'File nằm trong build/release/out sau khi build (miniquad-full.hex).'));
+      return;
+    }
+    const files = [['full_hex', 'miniquad-full.hex'], ['bootloader', 'miniquad-bootloader.bin'], ['app', 'miniquad-app.bin']];
+    this.downloads.replaceChildren(...files.filter(([k]) => m.files?.[k]).map(([k, label]) =>
+      h('a', { class: 'btn small', href: m.baseUrl + m.files[k].file, download: m.files[k].file }, `Tải ${label}`)));
+  }
 
   onHello() { this.refreshInfo(); }
 
@@ -168,19 +230,20 @@ export class FirmwareView {
 
   async reboot(target) {
     const app = this.app;
-    await app.run(null, async () => {
+    await app.run(this.rev === 1 ? null : 'Khởi động lại, chờ cổng USB…', () => app.expectReconnect(async () => {
       await app.device.reboot(target);
       await sleep(200);
-      const hl = await waitForMode(app.device, target === C.REBOOT_BOOTLOADER ? C.DEV_MODE_BOOTLOADER : C.DEV_MODE_APP, 5000);
+      const hl = await waitForMode(app.device, target === C.REBOOT_BOOTLOADER ? C.DEV_MODE_BOOTLOADER : C.DEV_MODE_APP);
       await app.onHello(hl);
-    });
+    }));
   }
 
   /* ---------------- image selection ---------------- */
   async loadManifest() {
     try {
-      this.manifest = await fetchManifest();
+      this.manifest = await fetchManifest(manifestUrl(this.rev));
       const m = this.manifest;
+      this.renderDownloads();
       this.manifestBox.replaceChildren(
         h('dl', { class: 'kv' },
           h('dt', 'Phiên bản'), h('dd', `v${m.version}`),
@@ -190,7 +253,9 @@ export class FirmwareView {
         h('div', { class: 'btn-row', style: { marginTop: '10px' } },
           h('button', { class: 'btn', onclick: () => this.useServer() }, 'Dùng bản này')));
     } catch (e) {
-      this.manifestBox.textContent = 'Trang này chưa kèm bản build (chỉ có khi deploy bằng GitLab CI). Hãy chọn file từ máy.';
+      this.manifest = null;
+      this.renderDownloads();
+      this.manifestBox.textContent = 'Trang này chưa kèm bản build (chỉ có trên GitHub Pages do CI deploy). Hãy chọn file từ máy.';
     }
   }
 
@@ -224,6 +289,7 @@ export class FirmwareView {
     const hd = img.header;
     const hl = this.app.hello;
     const same = hl && hd && hl.appValid && hl.appVersion === hd.fwVersion;
+    const other = hl && hd && img.ok && hl.boardId !== hd.boardId;
     this.imageInfo.replaceChildren(
       h('h3', { style: { fontSize: 'var(--fs-m)', marginBottom: '8px' } }, name),
       img.ok ? h('dl', { class: 'kv' },
@@ -231,11 +297,13 @@ export class FirmwareView {
         h('dt', 'Git'), h('dd', { class: 'text' }, hd.gitHash || '–'),
         h('dt', 'Build lúc'), h('dd', { class: 'text' }, dateOf(hd.buildTime)),
         h('dt', 'Kích thước'), h('dd', `${img.total} byte`),
-        h('dt', 'Board'), h('dd', { class: 'text' }, hd.boardName))
+        h('dt', 'Board'), h('dd', { class: 'text' }, BOARDS[hd.boardId]?.name || hd.boardName))
         : h('div', { class: 'callout err' }, img.errors.join('. ')),
       ...(same ? [h('p', { class: 'note' }, 'Board đang chạy đúng phiên bản này.')] : []),
+      ...(other ? [h('div', { class: 'callout err', style: { marginTop: '8px' } },
+        `File này dành cho ${BOARDS[hd.boardId]?.name || 'board khác'}, board đang nối là ${BOARDS[hl.boardId]?.name || hl.boardName}.`)] : []),
     );
-    this.flashBtn.disabled = !img.ok;
+    this.flashBtn.disabled = !img.ok || !!other;
   }
 
   logLine(list, text, kind = '') {
@@ -250,7 +318,7 @@ export class FirmwareView {
   async flash() {
     const app = this.app;
     if (!this.image?.ok || this.busy) return;
-    if (!app.hello) { app.toast('Board không trả lời. Dùng phần khôi phục ROM bên dưới.', 'err'); return; }
+    if (!app.hello) { app.toast(this.rev === 1 ? 'Board không trả lời. Dùng phần khôi phục ROM bên dưới.' : 'Board không trả lời. Xem phần SWD / DFU bên dưới.', 'err'); return; }
     if (app.armed) { app.toast('Đang ARM: hạ cánh và DISARM trước.', 'err'); return; }
     const ok = await app.confirm('Nạp firmware', `Ghi v${this.image.header.version} (${this.image.total} byte). Cấu hình được giữ nguyên. Không rút cáp hay pin trong khi nạp.`, 'Nạp firmware');
     if (!ok) return;
@@ -260,10 +328,10 @@ export class FirmwareView {
     this.lines.fw = [];
     app.setBusy(true);
     try {
-      const res = await updateFirmware(app.device, this.image, {
+      const res = await app.expectReconnect(() => updateFirmware(app.device, this.image, {
         log: (t, k) => this.logLine(this.log, t, k),
         progress: (f) => { this.prog.fw = f; this.progress.firstChild.style.width = `${f * 100}%`; },
-      });
+      }));
       app.toast(`Đã nạp v${versionString(res.appVersion)}`, 'ok');
       await app.onHello(res);
     } catch (e) {
@@ -317,12 +385,18 @@ export class FirmwareView {
   async enterRom() {
     const app = this.app;
     if (!app.hello) { app.toast('Board không trả lời: dùng cầu JP1 (BOOT0) rồi reset.', 'err'); return; }
+    if (this.rev !== 1) {
+      const ok = await app.confirm('Vào ROM bootloader (DFU)',
+        'Board sẽ rời cổng serial và hiện ra dưới tên “STM32 BOOTLOADER” (USB DFU) cho STM32CubeProgrammer / dfu-util. Trang này mất kết nối cho tới khi bạn reset board.', 'Vào DFU');
+      if (!ok) return;
+    }
     await app.run('Chuyển sang ROM bootloader…', async () => {
       await app.device.reboot(C.REBOOT_ROM);
       await sleep(200);
       app.hello = null;
       app.render();
-      app.toast('Board đang ở ROM bootloader. Chọn file rồi bấm “Nạp khôi phục”.', 'ok');
+      app.toast(this.rev === 1 ? 'Board đang ở ROM bootloader. Chọn file rồi bấm “Nạp khôi phục”.'
+        : 'Board đang ở ROM bootloader (USB DFU). Nạp bằng STM32CubeProgrammer, xong bấm reset S2.', 'ok', 8000);
     });
   }
 

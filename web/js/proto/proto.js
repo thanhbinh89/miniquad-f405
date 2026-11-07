@@ -23,6 +23,7 @@ export const C = {
 
   DEV_MODE_BOOTLOADER: 0, DEV_MODE_APP: 1,
   REBOOT_NORMAL: 0, REBOOT_BOOTLOADER: 1, REBOOT_ROM: 2,
+  BLR_NONE: 0, BLR_REQUEST: 1, BLR_NO_APP: 2, BLR_DBL_RESET: 3, BLR_CRASH_LOOP: 4, BLR_HOST: 5,
 
   BL_WRITE_MAX: 256,
 
@@ -42,11 +43,12 @@ export const C = {
   STF_GYRO_CAL: 1 << 4, STF_CALIBRATING: 1 << 5, STF_TOF_OK: 1 << 6, STF_TOF_VALID: 1 << 7,
   STF_BAT_PRESENT: 1 << 8, STF_ALT_VALID: 1 << 9, STF_MOTOR_TEST: 1 << 10, STF_HSE_FAIL: 1 << 11,
   STF_LANDED: 1 << 12, STF_MIXER_SAT: 1 << 13, STF_HOST_ALIVE: 1 << 14, STF_CRASHED: 1 << 15,
+  STF_USB: 1 << 16,
 
   ARMB_NO_RX: 1 << 0, ARMB_FAILSAFE: 1 << 1, ARMB_THROTTLE: 1 << 2, ARMB_ANGLE: 1 << 3,
   ARMB_CALIBRATING: 1 << 4, ARMB_IMU: 1 << 5, ARMB_BATTERY: 1 << 6, ARMB_SWITCH: 1 << 7,
   ARMB_MOTOR_TEST: 1 << 8, ARMB_BOOT_GRACE: 1 << 9, ARMB_LOOP: 1 << 10, ARMB_CRASH: 1 << 11,
-  ARMB_CONFIG: 1 << 12,
+  ARMB_CONFIG: 1 << 12, ARMB_NO_BAT: 1 << 13,
 
   FMODE_ACRO: 0, FMODE_ANGLE: 1, FMODE_ALT: 2, FMODE_FAILSAFE: 3,
   BAT_OK: 0, BAT_WARN: 1, BAT_CRIT: 2, BAT_NONE: 3,
@@ -61,6 +63,22 @@ export const SIZES = {
   tlm_rate_t: 50,
   tlm_imu_t: 22,
   tlm_alt_t: 38,
+};
+
+/** Why the bootloader stayed resident (HELLO.bootReason). */
+export const BOOT_REASONS = {
+  [C.BLR_NONE]: 'Đang trong cửa sổ khởi động',
+  [C.BLR_REQUEST]: 'Ứng dụng yêu cầu (cập nhật firmware)',
+  [C.BLR_NO_APP]: 'Chưa có ứng dụng hợp lệ trong flash',
+  [C.BLR_DBL_RESET]: 'Bấm reset 2 lần liền',
+  [C.BLR_CRASH_LOOP]: 'Ứng dụng tự reset liên tục (crash) nên bootloader giữ lại',
+  [C.BLR_HOST]: 'Trang cấu hình bắt được cửa sổ khởi động',
+};
+
+/** Hardware revisions by HELLO.boardId / app header board id. */
+export const BOARDS = {
+  1: { rev: 1, name: 'MiniQuad-F405 v1', link: 'uart' },
+  2: { rev: 2, name: 'MiniQuad-F405 v2 (USB-C)', link: 'usb' },
 };
 
 export const STATUS_TEXT = {
@@ -80,6 +98,7 @@ export const STATUS_FLAGS = [
   ['STF_TOF_VALID', 'ToF đo được'], ['STF_BAT_PRESENT', 'Pin'], ['STF_ALT_VALID', 'Độ cao OK'],
   ['STF_MOTOR_TEST', 'Test motor'], ['STF_HSE_FAIL', 'Lỗi thạch anh'], ['STF_LANDED', 'Đã đáp'],
   ['STF_MIXER_SAT', 'Mixer bão hoà'], ['STF_HOST_ALIVE', 'Host'], ['STF_CRASHED', 'Va chạm'],
+  ['STF_USB', 'USB'],
 ].map(([k, label]) => ({ key: k, bit: C[k], label }));
 
 export const ARM_BLOCKERS = [
@@ -96,6 +115,7 @@ export const ARM_BLOCKERS = [
   ['ARMB_LOOP', 'Vòng điều khiển không chạy'],
   ['ARMB_CRASH', 'Phát hiện va chạm - gạt ARM về OFF'],
   ['ARMB_CONFIG', 'Đang lưu cấu hình'],
+  ['ARMB_NO_BAT', 'Chưa cắm pin (đang chạy bằng nguồn USB)'],
 ].map(([k, text]) => ({ key: k, bit: C[k], text }));
 
 export const FLIGHT_MODES = { 0: 'ACRO', 1: 'ANGLE', 2: 'ALT HOLD', 3: 'FAILSAFE' };
@@ -179,9 +199,9 @@ export function decodeHello(p) {
   const r = new Reader(p);
   const h = {
     status: r.u8(), mode: r.u8(), protoVersion: r.u8(), boardId: r.u8(),
-    fwVersion: r.u32(), appVersion: r.u32(), appValid: r.u8() === 1,
+    fwVersion: r.u32(), appVersion: r.u32(), appValid: r.u8() === 1, bootReason: r.u8(),
   };
-  r.bytes(3);
+  r.bytes(2);
   h.appMaxSize = r.u32();
   h.uid = [r.u32(), r.u32(), r.u32()];
   h.buildTime = r.u32();

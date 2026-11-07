@@ -4,7 +4,7 @@ Thông số mặc định được kiểm chứng trên mô hình quad 30 g, mot
 
 ## 1. Trước chuyến bay đầu
 
-1. **Kết nối** trang cấu hình (J2, 460800 baud). Trang *Tổng quan* phải có cờ `IMU`, `Gyro cal`, `Pin`; vòng điều khiển 1000 Hz.
+1. **Kết nối** trang cấu hình (board v2: cáp USB-C; v1: USB-UART vào J2, 460800 baud). Bay thử thì rút cáp ra. Trang *Tổng quan* phải có cờ `IMU`, `Gyro cal`, `Pin`; vòng điều khiển 1000 Hz.
 2. **Hướng lắp:** nghiêng quad bằng tay. Chúc mũi xuống → Pitch âm; nghiêng sang phải → Roll dương; quay mũi sang phải → Yaw tăng. Sai thì sửa `board_yaw` ở *Hiệu chuẩn & test*.
 3. **Hiệu chuẩn gia tốc kế:** đặt quad trên mặt phẳng nằm ngang, bấm *Hiệu chuẩn mặt phẳng*, giữ yên ~1 s. Offset được tự lưu vào flash. Gyro tự hiệu chuẩn mỗi lần bật nguồn khi quad đứng yên (cờ `Gyro cal`).
 4. **Pin:** so điện áp trên trang với đồng hồ đo, chỉnh `bat_vscale` nếu lệch hơn 0,03 V.

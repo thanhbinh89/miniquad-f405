@@ -36,6 +36,11 @@ EXPORT("run")      void w_run(int ms)
     }
 }
 EXPORT("mode")     int w_mode(void) { return (int)emu_mode(); }
+EXPORT("link_up")  int w_link_up(void) { return emu_link_up() ? 1 : 0; }
+EXPORT("link_epoch") uint32_t w_link_epoch(void) { return emu_link_epoch(); }
+EXPORT("usb_cable") void w_usb_cable(int plugged) { emu_usb_cable(plugged != 0); }
+EXPORT("usb_cable_in") int w_usb_cable_in(void) { return emu_usb_cable_in() ? 1 : 0; }
+EXPORT("board_rev") int w_board_rev(void) { return emu_board_rev(); }
 EXPORT("uptime")   uint32_t w_uptime(void) { return emu_uptime_ms(); }
 
 EXPORT("rc_set")   void w_rc_set(int ch, int us) { emu_rc_set(ch, (uint16_t)us); }

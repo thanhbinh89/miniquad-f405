@@ -1,7 +1,7 @@
 /**
  * Demo mode: virtual transmitter (PPM) and the physical side of the
- * emulated board - power, reset, BOOT0 jumper, battery, status LED and
- * buzzer. Keyboard: W/S ga, A/D yaw, mũi tên roll/pitch, Space ARM,
+ * emulated board - power, reset, USB-C cable, BOOT0 jumper, battery,
+ * status LED and buzzer. Keyboard: W/S ga, A/D yaw, mũi tên roll/pitch, Space ARM,
  * 1/2/3 công tắc chế độ. A gamepad works too (mode 2).
  */
 import { fmtNum, h } from './dom.js';
@@ -58,6 +58,7 @@ export class DemoDock {
     this.auxBtn = h('button', { class: 'btn small', onclick: () => { this.aux = !this.aux; this.auxBtn.textContent = `CH7: ${this.aux ? 'bật' : 'tắt'}`; } }, 'CH7: tắt');
     this.led = h('span', { class: 'vled', title: 'LED trạng thái (xanh)' });
     this.boot0 = h('input', { type: 'checkbox', onchange: () => tr.boot0(this.boot0.checked) });
+    this.usbOn = h('input', { type: 'checkbox', checked: tr.usbCableIn, onchange: () => tr.usbCable(this.usbOn.checked) });
     this.txOn = h('input', { type: 'checkbox', checked: true, onchange: () => tr.rcEnable(this.txOn.checked) });
     this.tofOn = h('input', { type: 'checkbox', checked: true, onchange: () => tr.tofEnable(this.tofOn.checked) });
     this.soundCb = h('input', { type: 'checkbox', onchange: () => { this.sound = this.soundCb.checked; if (!this.sound) this.beep(0); } });
@@ -83,6 +84,7 @@ export class DemoDock {
           h('button', { class: 'btn small', onclick: () => tr.kick(250, -150, 0) }, 'Đẩy quad'),
           h('button', { class: 'btn small', onclick: () => tr.fault() }, 'Gây HardFault')),
         h('div', { class: 'board-ctl' },
+          ...(tr.boardRev >= 2 ? [h('label', { class: 'check', title: 'Rút cáp: board vẫn bay (bằng pin), trang chờ cắm lại' }, this.usbOn, 'Cáp USB-C')] : []),
           h('label', { class: 'check' }, this.txOn, 'Bộ phát bật'),
           h('label', { class: 'check' }, this.tofOn, 'ToF hoạt động'),
           h('label', { class: 'check' }, this.boot0, 'Cầu JP1 (BOOT0)'),

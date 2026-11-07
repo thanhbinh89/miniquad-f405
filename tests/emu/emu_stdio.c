@@ -11,7 +11,10 @@
  *              boot0 <0|1>         power         reset
  *              vehicle             battery <soc> kick <r> <p> <y>
  *              fault               run <ms>      state     quit
- *   stderr : "STATE {json}" answers and mode changes ("MODE app")
+ *              usb <0|1>           (USB cable, board rev 2)
+ *   stderr : "STATE {json}" answers, mode changes ("MODE app") and host
+ *            port changes ("LINK 1 <epoch>" / "LINK 0 <epoch>": on board
+ *            rev 2 the USB serial port vanishes on every MCU reset)
  *
  * Time runs in real time (times --speed) so the protocol timeouts of the
  * host behave as with hardware.
@@ -53,9 +56,11 @@ static void print_state(void)
     fprintf(stderr,
             "STATE {\"mode\":\"%s\",\"uptime\":%u,\"armed\":%d,\"x\":%.3f,\"y\":%.3f,\"h\":%.3f,"
             "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f,\"vbat\":%.3f,\"current\":%.3f,"
-            "\"motors\":[%.3f,%.3f,%.3f,%.3f],\"soc\":%.3f,\"led\":%d,\"buzzer\":%u}\n",
+            "\"motors\":[%.3f,%.3f,%.3f,%.3f],\"soc\":%.3f,\"led\":%d,\"buzzer\":%u,"
+            "\"rev\":%d,\"link\":%d,\"epoch\":%u}\n",
             mode_name(emu_mode()), emu_uptime_ms(), (int)t[8], t[0], t[1], t[2], t[3], t[4], t[5], t[6],
-            t[7], t[9], t[10], t[11], t[12], t[13], emu_led() ? 1 : 0, emu_buzzer_hz());
+            t[7], t[9], t[10], t[11], t[12], t[13], emu_led() ? 1 : 0, emu_buzzer_hz(), emu_board_rev(),
+            emu_link_up() ? 1 : 0, emu_link_epoch());
     fflush(stderr);
 }
 
@@ -86,6 +91,8 @@ static int command(char *line, double *skip_ms)
         emu_battery_set((float)a);
     } else if (strcmp(cmd, "kick") == 0 && n >= 4) {
         emu_kick((float)a, (float)b, (float)c);
+    } else if (strcmp(cmd, "usb") == 0 && n >= 2) {
+        emu_usb_cable(a != 0);
     } else if (strcmp(cmd, "fault") == 0) {
         emu_inject_fault();
     } else if (strcmp(cmd, "run") == 0 && n >= 2) {
@@ -124,7 +131,10 @@ int main(int argc, char **argv)
 
     emu_init(!power_on);
     emu_mode_t last_mode = emu_mode();
-    fprintf(stderr, "MODE %s\n", mode_name(last_mode));
+    bool last_link = emu_link_up();
+    uint32_t last_epoch = emu_link_epoch();
+    fprintf(stderr, "BOARD %d\nMODE %s\nLINK %d %u\n", emu_board_rev(), mode_name(last_mode),
+            last_link ? 1 : 0, last_epoch);
     fflush(stderr);
 
     char line[256];
@@ -215,6 +225,16 @@ int main(int argc, char **argv)
         if (emu_mode() != last_mode) {
             last_mode = emu_mode();
             fprintf(stderr, "MODE %s\n", mode_name(last_mode));
+            fflush(stderr);
+        }
+        if (emu_link_up() != last_link || emu_link_epoch() != last_epoch) {
+            if (last_link && emu_link_epoch() != last_epoch && emu_link_up()) {
+                /* went down and up between two passes: report both */
+                fprintf(stderr, "LINK 0 %u\n", emu_link_epoch());
+            }
+            last_link = emu_link_up();
+            last_epoch = emu_link_epoch();
+            fprintf(stderr, "LINK %d %u\n", last_link ? 1 : 0, last_epoch);
             fflush(stderr);
         }
     }

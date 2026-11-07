@@ -24,6 +24,11 @@
 #define BL_TOKEN_BOOT_APP       0xA9900A99u  /* jump to app right after reset */
 #define BL_TOKEN_DBL_RESET      0xD0B1E5E7u  /* double reset detection window */
 
+/* Crash-loop detection (field 'app_starts'): the bootloader counts every
+ * start of the application, the application sets the counter back to 0 once
+ * it has run SHARED_APP_CONFIRM_MS, and before any deliberate reboot. */
+#define SHARED_APP_CONFIRM_MS   5000u
+
 /* bootloader -> app flags (field 'boot_flags') */
 #define BOOT_F_FROM_BL          (1u << 0)    /* app was started by our bootloader */
 #define BOOT_F_HSE_FAIL_BL      (1u << 1)    /* bootloader ran on HSI             */
@@ -37,7 +42,8 @@ typedef struct {
     uint32_t boot_flags;    /* BOOT_F_*                                     */
     uint32_t bl_version;    /* bootloader version (major<<16|minor<<8|patch) */
     uint32_t boot_count;    /* incremented by the bootloader on every boot  */
-    uint32_t reserved[8];
+    uint32_t app_starts;    /* app starts not yet confirmed (crash loop)    */
+    uint32_t reserved[7];
 } shared_ram_t;
 
 _Static_assert(sizeof(shared_ram_t) == MM_SHARED_SIZE, "shared RAM block size");

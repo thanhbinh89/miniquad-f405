@@ -11,7 +11,7 @@ flowchart LR
   BAT --> SWI
   SWI["Flight loop (ngắt mềm, 1 kHz)<br/>fc.c"] --> PWM[TIM3 PWM 32 kHz<br/>M1–M4]
   SWI --> RINGS[tlm_rings]
-  MAIN["Main loop<br/>sched.c"] --> COMMS[comms.c] <-->|USART1 + DMA<br/>COBS/CRC| WEB[Trang cấu hình]
+  MAIN["Main loop<br/>sched.c"] --> COMMS[comms.c] <-->|link_port: USB CDC (v2)<br/>hoặc USART1 + DMA (v1)<br/>COBS/CRC| WEB[Trang cấu hình]
   RINGS --> COMMS
   MAIN --> NOTIFY[notify.c<br/>LED + còi]
   COMMS --> PARAMS[params + config_store<br/>flash sector 1–2]
@@ -32,13 +32,13 @@ flowchart TD
   H -->|token BOOT_APP| APP[Ứng dụng 0x0800C200]
   H -->|BL_REQ_ROM| ROM[ROM bootloader STM32<br/>0x1FFF0000]
   H --> BL[Bootloader main]
-  BL -->|BL_REQ_STAY / app hỏng / reset 2 lần| STAY[Ở lại bootloader]
-  BL -->|có gói hợp lệ trong 300 ms| STAY
-  BL -->|hết 300 ms| APP
+  BL -->|BL_REQ_STAY / app hỏng / reset 2 lần / crash loop| STAY[Ở lại bootloader<br/>bật USB hoặc UART]
+  BL -->|v1: có gói hợp lệ trong 300 ms| STAY
+  BL -->|hết 300 ms, không bật USB| APP
   STAY -->|BL_BOOT / 30 s không ai nói chuyện| APP
 ```
 
-- Vùng RAM chia sẻ 64 byte ở `0x2001FFC0` (`shared_ram.h`, không bị xoá khi reset) mang yêu cầu giữa ứng dụng và bootloader, số lần khởi động và `RCC->CSR` lúc reset.
+- Vùng RAM chia sẻ 64 byte ở `0x2001FFC0` (`shared_ram.h`, không bị xoá khi reset) mang yêu cầu giữa ứng dụng và bootloader, số lần khởi động, `RCC->CSR` lúc reset và bộ đếm khởi động chưa xác nhận (phát hiện crash loop, `bl_policy.c`).
 - Bootloader kiểm tra image ứng dụng trước khi nhảy: magic, CRC header, CRC image, board id, SP/PC hợp lệ (`bl_image.c`).
 - Ứng dụng: `clock_init()` (HSE 8 MHz → 168 MHz; hỏng thạch anh thì chạy HSI và báo lỗi), bảo vệ stack bằng MPU, khởi tạo driver, nạp cấu hình, bật IMU, watchdog 250 ms.
 
@@ -64,15 +64,23 @@ Linker script được sinh từ `memory_map.h` bằng bộ tiền xử lý C, n
 | 2 | EXTI3, DMA2 Stream0 | IMU data-ready → SPI DMA → pend flight loop |
 | 3 | SysTick 1 kHz | Đồng hồ ms, giám sát flight loop (treo > 20 ms → tắt motor) |
 | 5 | I2C2 EV/ER, DMA1 Stream2/7 | ToF |
-| 6 | DMA2 Stream7 | UART TX |
+| 6 | OTG_FS (v2) / DMA2 Stream7 (v1) | USB CDC / UART TX |
 | 8 | FSMC (ngắt mềm) | Flight loop `fc_update()` |
 
 | Ngoại vi | DMA | Chế độ |
 |---|---|---|
 | SPI1 RX / TX (IMU) | DMA2 S0 / S3, kênh 3 | một lần cho mỗi mẫu, 10,5 MHz |
-| USART1 RX / TX (link) | DMA2 S2 / S7, kênh 4 | RX vòng 1 KB, TX ring 4 KB |
+| USART1 RX / TX (link, v1) | DMA2 S2 / S7, kênh 4 | RX vòng 1 KB, TX ring 4 KB |
+| USB OTG FS (link, v2) | – (FIFO riêng 1,25 KB của core) | RX ring 1 KB, TX ring 4 KB, một gói 64 B mỗi ngắt |
 | ADC1 (pin, VREFINT, nhiệt độ) | DMA2 S4, kênh 0 | vòng, 32 lần quét, lấy trung bình |
 | I2C2 RX / TX (ToF) | DMA1 S2 / S7, kênh 7 | theo từng giao dịch |
+
+## Đường truyền tới trang cấu hình
+
+`hal/link_port.h` che phiên bản board: `link_port_init/read/write/tx_free/tx_idle/task/detach`. `comms.c` (giao thức ứng dụng) và bootloader chỉ thấy dòng byte.
+
+- **Board v2 – USB** (`common/usb/`): `usb_dwc2.c` là tầng điều khiển cho core OTG_FS (Synopsys DWC2, chế độ slave không DMA): FIFO nhận chung đọc theo từ trạng thái `GRXSTSP`, mỗi endpoint IN một FIFO phát, mỗi lần một gói. `usb_cdc.c` không phụ thuộc phần cứng: descriptor, request chương 9, CDC ACM (line coding, DTR/RTS), hai ring SPSC, flow control (OUT chỉ được mở lại khi ring còn ≥ 64 byte, máy tính nhận NAK trong lúc chờ), ZLP sau gói 64 byte cuối, D+ chỉ bật khi thấy VBUS trên PA9. Ứng dụng chạy bằng ngắt OTG_FS (ưu tiên 6, phía luồng chỉ ghi ring rồi pend ngắt); bootloader chạy kiểu polling trong vòng lặp chính. Test `tests/unit/test_usb.c` chạy `usb_cdc.c` với một host giả lập.
+- **Board v1 – UART** (`hal/uart_link.c`): USART1, RX bằng DMA vòng, TX ring + DMA.
 
 ## Flight loop (`flight/fc.c`)
 
@@ -102,7 +110,7 @@ Linker script được sinh từ `memory_map.h` bằng bộ tiền xử lý C, n
 
 ## An toàn
 
-- ARM chỉ khi: có PPM, ga thấp, quad gần nằm ngang (`arm_angle`), gyro đã hiệu chuẩn, IMU tốt, pin không ở mức nguy hiểm, không test motor, không đang lưu cấu hình, quá 2 s sau khởi động, và công tắc ARM đã được gạt về OFF trước đó (không ARM khi vừa có lại sóng).
+- ARM chỉ khi: có PPM, ga thấp, quad gần nằm ngang (`arm_angle`), gyro đã hiệu chuẩn, IMU tốt, có pin (không chỉ nguồn USB) và pin không ở mức nguy hiểm, không test motor, không đang lưu cấu hình, quá 2 s sau khởi động, và công tắc ARM đã được gạt về OFF trước đó (không ARM khi vừa có lại sóng).
 - Failsafe khi mất PPM (`rx_fs_ms`): tự hạ cánh (có ToF: theo tốc độ `alt_land_vz`; không ToF: ga 0,85 × ga treo) rồi tắt motor khi chạm đất hoặc sau `fs_land_s`; hoặc tắt motor ngay (`fs_mode = 0`).
 - Va chạm: nghiêng quá `crash_angle` lâu hơn `crash_ms` (hoặc nằm yên lật ngược) → tắt motor, còi định vị.
 - Giám sát: SysTick kiểm tra flight loop; IWDG 250 ms; HardFault/MemManage/BusFault/UsageFault tắt motor, ghi bản ghi vào `.noinit` rồi reset (đọc lại ở trang Firmware).
@@ -112,6 +120,6 @@ Linker script được sinh từ `memory_map.h` bằng bộ tiền xử lý C, n
 
 | Lớp | Ở đâu | Chạy gì |
 |---|---|---|
-| Đơn vị | `tests/unit` | các module thuần (lọc, PID, mixer, KF, tham số, bootloader, giao thức…) |
+| Đơn vị | `tests/unit` | các module thuần (lọc, PID, mixer, KF, tham số, bootloader + quyết định khởi động, giao thức, stack USB CDC với host giả lập…) |
 | Mô phỏng vòng kín | `tests/sim` | `fc.c` thật + mô hình quad 30 g (độ trễ motor, đường cong lực đẩy khác giả định, sụt áp pin, rung, ToF trễ) |
-| Emulator board | `tests/emu` | bootloader, ROM bootloader (AN3155), ứng dụng, flash, UART 460800 baud; bản native cho test Node, bản WebAssembly cho chế độ mô phỏng của trang web |
+| Emulator board | `tests/emu` | bootloader + quyết định khởi động, ROM bootloader (AN3155), ứng dụng, flash; đường truyền USB CDC (v2: mất khi MCU reset, enumerate lại) hoặc UART 460800 baud (v1); build cho cả hai board; bản native cho test Node, bản WebAssembly cho chế độ mô phỏng của trang web |

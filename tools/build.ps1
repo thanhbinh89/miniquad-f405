@@ -9,12 +9,17 @@
     plug-in of STM32CubeIDE) and CMake, then configures and builds.
     Images end up in build\<config>\out.
 
+    -Board selects the hardware: 2 = USB-C board (default), 1 = first board
+    with the UART connector J2. Board 1 builds go to build\<config>-v1.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\build.ps1
     powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Config Debug -Clean
+    powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Board 1
 #>
 param(
     [ValidateSet('Release', 'Debug')] [string] $Config = 'Release',
+    [ValidateSet(1, 2)] [int] $Board = 2,
     [switch] $Clean
 )
 $ErrorActionPreference = 'Stop'
@@ -53,11 +58,13 @@ $python = Find-Tool 'python' @()
 if (-not $python) { $python = Find-Tool 'py' @() }
 if (-not $python) { throw 'python 3 not found (needed by tools/fwpack.py)' }
 
-$build = Join-Path $root ('build\' + $Config.ToLower())
+$suffix = if ($Board -eq 1) { '-v1' } else { '' }
+$build = Join-Path $root ('build\' + $Config.ToLower() + $suffix)
 if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
 
 Write-Host "toolchain : $toolchainDir"
 Write-Host "generator : $generator ($program)"
+Write-Host "board     : rev $Board"
 & $gcc --version | Select-Object -First 1
 
 & $cmake -S $root -B $build -G $generator `
@@ -65,6 +72,7 @@ Write-Host "generator : $generator ($program)"
     "-DCMAKE_TOOLCHAIN_FILE=$root\cmake\arm-none-eabi.cmake" `
     "-DARM_TOOLCHAIN_DIR=$toolchainDir" `
     "-DCMAKE_BUILD_TYPE=$Config" `
+    "-DMQ_BOARD_REV=$Board" `
     "-DPython3_EXECUTABLE=$python"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

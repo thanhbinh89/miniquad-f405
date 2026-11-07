@@ -10,7 +10,7 @@
  *   EXTI3 / DMA2 S0 (2)          IMU data ready -> SPI DMA read -> pend loop
  *   SysTick (3)                  1 ms tick, flight loop stall supervisor
  *   I2C2 + DMA1 (5)              ToF transactions
- *   DMA2 S7 (6)                  link TX
+ *   OTG_FS (6) / DMA2 S7 (6)     link: USB CDC (board rev 2) / USART1 TX (rev 1)
  *   FLIGHT_SWI (8)               flight loop, 1 kHz (fc_update)
  *   main loop (thread)           cooperative tasks below
  */
@@ -43,7 +43,7 @@
 #include "sched.h"
 #include "shared_ram.h"
 #include "systime.h"
-#include "uart_link.h"
+#include "link_port.h"
 #include "vl53l1.h"
 #include "watchdog.h"
 
@@ -55,22 +55,26 @@ static uint32_t      s_imu_retry_ms;
 
 /* ---------------- link port ---------------- */
 static const comms_port_t s_port = {
-    .read = uart_link_read,
-    .write = uart_link_write,
-    .tx_free = uart_link_tx_free,
+    .read = link_port_read,
+    .write = link_port_write,
+    .tx_free = link_port_tx_free,
 };
+
+static bool s_boot_confirmed;
 
 /* ---------------- tasks ---------------- */
 static void task_comms(void)
 {
+    link_port_task(time_ms());
     comms_task();
     uint8_t target;
     if (comms_take_reboot(&target)) {
         uint32_t t0 = time_ms();
-        while (!uart_link_tx_idle() && (time_ms() - t0) < 100u) {
+        while (!link_port_tx_idle() && (time_ms() - t0) < 100u) {
+            link_port_task(time_ms());
         }
         motor_pwm_stop();
-        svc_reboot(target);
+        svc_reboot(target);                 /* USB: detaches, then resets */
     }
 }
 
@@ -83,6 +87,7 @@ static void task_battery(void)
 {
     adc_raw_t raw;
     adc_read(&raw);
+    battery_set_usb_power(&g_battery, link_port_usb_power());
     battery_update(&g_battery, &s_bat_cal, raw.vbat, raw.vref, raw.temp, 0.005f);
     flight_task_set_battery(&g_battery);
 }
@@ -135,6 +140,15 @@ static void task_housekeeping(void)
         }
     }
 
+    /* running fine: tell the bootloader this start was not a crash */
+    if (!s_boot_confirmed && now >= SHARED_APP_CONFIRM_MS) {
+        volatile shared_ram_t *sh = SHARED_RAM;
+        if (sh->magic == SHARED_MAGIC) {
+            sh->app_starts = 0u;
+        }
+        s_boot_confirmed = true;
+    }
+
     /* IMU missing at boot: retry while disarmed (e.g. loose connection) */
     if (!s_imu_ok && !fc_is_armed() && (now - s_imu_retry_ms) > 2000u) {
         s_imu_retry_ms = now;
@@ -169,13 +183,19 @@ static sched_task_t s_tasks[] = {
 static void log_boot_info(void)
 {
     volatile shared_ram_t *sh = SHARED_RAM;
-    log_printf(LOG_LEVEL_INFO, "MiniQuad-F405 %s (%s), clock %s", FW_VERSION_STR, FW_GIT_HASH,
+    log_printf(LOG_LEVEL_INFO, "%s %s (%s), clock %s", BOARD_NAME, FW_VERSION_STR, FW_GIT_HASH,
                (clock_source() == CLOCK_SRC_HSE) ? "HSE" : "HSI (crystal failed!)");
+#if BOARD_LINK_USB
+    if (clock_source() != CLOCK_SRC_HSE) {
+        log_printf(LOG_LEVEL_ERROR, "USB needs the 8 MHz crystal: link unreliable on HSI");
+    }
+#endif
     if (sh->magic == SHARED_MAGIC) {
         uint32_t csr = sh->reset_csr;
-        log_printf(LOG_LEVEL_INFO, "reset cause 0x%08X%s%s%s boot #%u", (unsigned)csr,
+        log_printf(LOG_LEVEL_INFO, "reset cause 0x%08X%s%s%s boot #%u, unconfirmed starts %u", (unsigned)csr,
                    (csr & RCC_CSR_IWDGRSTF) ? " watchdog" : "", (csr & RCC_CSR_SFTRSTF) ? " software" : "",
-                   (csr & RCC_CSR_BORRSTF) ? " brown-out" : "", (unsigned)sh->boot_count);
+                   (csr & RCC_CSR_BORRSTF) ? " brown-out" : "", (unsigned)sh->boot_count,
+                   (unsigned)sh->app_starts);
     }
     fault_record_t f;
     if (fault_last(&f)) {
@@ -205,7 +225,7 @@ int main(void)
     config_store_init(config_store_target_ops());
     (void)config_store_load();
 
-    uart_link_init(LINK_BAUD);
+    link_port_init(LINK_PORT_APP);          /* USB enumerates once VBUS is seen */
     comms_init(&s_port);
 
     s_bat_cal.vrefint_cal = *(const volatile uint16_t *)MM_VREFINT_CAL;
